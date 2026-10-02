@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Centre de contrôle CPD</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.21/index.global.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.21/locales/fr.global.min.js"></script>
+<style>
+  :root {
+    --bleu: #000091; --bleu-clair: #e3e3fd; --bleu-hover: #1212ff;
+    --rouge: #c9191e; --rouge-clair: #fee9e9;
+    --orange: #b34000; --orange-clair: #fff4e5;
+    --vert: #18753c; --vert-clair: #e6f4ea;
+    --texte: #1e1e1e; --muted: #666; --bord: #ddd; --fond: #fff; --fond-2: #f6f6f6;
+    --rayon: 6px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--fond); color: var(--texte);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--bord); flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 15px; color: var(--bleu); white-space: nowrap; }
+  nav { display: flex; gap: 2px; flex-wrap: wrap; }
+  nav button { border: 0; background: none; padding: 6px 10px; border-radius: var(--rayon); cursor: pointer; font: inherit; color: var(--texte); }
+  nav button:hover { background: var(--fond-2); }
+  nav button.actif { background: var(--bleu-clair); color: var(--bleu); font-weight: 600; }
+  .spacer { flex: 1; }
+  main { flex: 1; overflow: auto; padding: 14px; }
+  button.btn, a.btn { font: inherit; border: 1px solid var(--bleu); background: var(--fond); color: var(--bleu); padding: 5px 10px;
+    border-radius: var(--rayon); cursor: pointer; text-decoration: none; display: inline-block; white-space: nowrap; }
+  button.btn:hover { background: var(--bleu-clair); }
+  button.btn.primaire { background: var(--bleu); color: #fff; }
+  button.btn.primaire:hover { background: var(--bleu-hover); }
+  button.btn.danger { border-color: var(--rouge); color: var(--rouge); }
+  button.btn:disabled { opacity: .45; cursor: default; }
+  button.lien { border: 0; background: none; color: var(--bleu); cursor: pointer; padding: 0; font: inherit; text-align: left; }
+  button.lien:hover { text-decoration: underline; }
+  input[type=text], input[type=search], input[type=email], input[type=date], select, textarea {
+    font: inherit; padding: 5px 8px; border: 1px solid #bbb; border-radius: var(--rayon); background: #fff; color: var(--texte); }
+  textarea { width: 100%; font-family: Consolas, monospace; font-size: 12px; }
+  label.chk { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  h3 { font-size: 13px; margin: 14px 0 6px; color: var(--bleu); text-transform: uppercase; letter-spacing: .03em; }
+  .muted { color: var(--muted); }
+  .petit { font-size: 12px; }
+  .grille { display: grid; gap: 12px; }
+  .kpis { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .kpi { border: 1px solid var(--bord); border-radius: var(--rayon); padding: 8px 10px; cursor: pointer; }
+  .kpi:hover { border-color: var(--bleu); }
+  .kpi .v { font-size: 22px; font-weight: 700; color: var(--bleu); }
+  .kpi .l { color: var(--muted); font-size: 12px; }
+  .deux-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .deux-col { grid-template-columns: 1fr; } }
+  .carte { border: 1px solid var(--bord); border-radius: var(--rayon); padding: 10px 12px; }
+  .alerte { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--rayon); margin-bottom: 4px; cursor: pointer; }
+  .alerte:hover { filter: brightness(.97); }
+  .alerte .n { font-weight: 700; min-width: 28px; text-align: right; }
+  .alerte.rouge { background: var(--rouge-clair); color: var(--rouge); }
+  .alerte.orange { background: var(--orange-clair); color: var(--orange); }
+  .alerte.vert { background: var(--vert-clair); color: var(--vert); }
+  table.t { border-collapse: collapse; width: 100%; }
+  table.t th, table.t td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
+  table.t th { background: var(--fond-2); position: sticky; top: 0; font-weight: 600; z-index: 1; }
+  table.t tr:hover td { background: #fafaff; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; background: var(--fond-2); border: 1px solid var(--bord); margin: 1px 2px 1px 0; white-space: nowrap; }
+  .badge.role { background: var(--bleu-clair); border-color: transparent; color: var(--bleu); }
+  .badge.vieux { opacity: .55; }
+  .pastille { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  /* Recherche */
+  .recherche { display: grid; grid-template-columns: 320px 1fr; gap: 14px; height: 100%; }
+  @media (max-width: 800px) { .recherche { grid-template-columns: 1fr; } }
+  .resultats { border: 1px solid var(--bord); border-radius: var(--rayon); overflow: auto; max-height: calc(100vh - 130px); }
+  .res { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+  .res:hover, .res.sel { background: var(--bleu-clair); }
+  .res .t1 { font-weight: 600; }
+  .res .t2 { font-size: 12px; color: var(--muted); }
+  .fiche { overflow: auto; max-height: calc(100vh - 130px); }
+  .fiche .entete { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; border-bottom: 2px solid var(--bleu); padding-bottom: 6px; margin-bottom: 8px; }
+  .fiche .entete h2 { margin: 0; font-size: 18px; }
+  dl.kv { display: grid; grid-template-columns: 130px 1fr; gap: 3px 10px; margin: 0; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; }
+  ul.simple { margin: 0; padding-left: 18px; }
+  .barre { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .chips { display: flex; gap: 4px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--bord); border-radius: 14px; padding: 2px 9px; cursor: pointer; user-select: none; font-size: 12px; background: #fff; }
+  .chip.on { background: var(--bleu); border-color: var(--bleu); color: #fff; }
+  #calendrier { min-height: 560px; }
+  .fc { font-size: 12px; }
+  .apercu { border: 1px dashed #aaa; border-radius: var(--rayon); padding: 10px; background: #fcfcfc; max-height: 340px; overflow: auto; }
+  .apercu .objet { font-weight: 600; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-bottom: 6px; }
+  .inconnu { background: #ffe08a; }
+  .ok { color: var(--vert); } .ko { color: var(--rouge); } .warn { color: var(--orange); }
+  /* Modale */
+  #voile { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none; align-items: flex-start; justify-content: center; z-index: 50; padding: 30px 12px; overflow: auto; }
+  #voile.ouvert { display: flex; }
+  .modale { background: #fff; border-radius: 8px; max-width: 760px; width: 100%; padding: 16px 18px; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  .modale .pied { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  #toast { position: fixed; bottom: 14px; right: 14px; background: #222; color: #fff; padding: 8px 14px; border-radius: 6px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 60; max-width: 60vw; }
+  #toast.vu { opacity: .95; }
+  .formulaire { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; align-items: center; }
+  .formulaire input, .formulaire select, .formulaire textarea { width: 100%; }
+  .scroll-table { max-height: 55vh; overflow: auto; border: 1px solid var(--bord); border-radius: var(--rayon); }
+  #print-area { display: none; }
+  @media print {
+    #app, #voile, #toast { display: none !important; }
+    #print-area { display: block; }
+    .page { page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Centre de contrôle CPD</h1>
+    <nav id="onglets">
+      <button data-tab="dash">Tableau de bord</button>
+      <button data-tab="search">Recherche</button>
+      <button data-tab="cal">Calendrier</button>
+      <button data-tab="lists">Listes &amp; envois</button>
+      <button data-tab="import">Import</button>
+      <button data-tab="settings">Réglages</button>
+    </nav>
+    <span class="spacer"></span>
+    <label class="petit muted">Année <select id="annee"></select></label>
+    <button class="btn" id="btn-refresh" title="Recharger les données">⟳</button>
+  </header>
+  <main id="main"><p class="muted">Chargement…</p></main>
+</div>
+<div id="voile"><div class="modale" id="modale"></div></div>
+<div id="toast"></div>
+<div id="print-area"></div>
+
+<script>
+'use strict';
+/* =====================================================================
+   1. RÉFÉRENTIELS ET SCHÉMA DU DOCUMENT
+   ===================================================================== */
+const ROLES = ['PEMF', 'MAT', 'IEN', 'CPC', 'CPD', 'Directeur', 'LPE1', 'LPE2', 'M2E1', 'M2E2', 'MEEF2',
+  'T0', 'T1', 'Candidat CAFIPEMF', 'Jury CAFIPEMF', 'Formateur', 'Partenaire', 'Autre'];
+const ROLES_ETUDIANTS = ['LPE1', 'LPE2', 'M2E1', 'M2E2', 'MEEF2', 'T0'];
+const ROLES_ENCADRANTS = ['PEMF', 'MAT'];
+const TYPES_SUIVI = ['Stage filé', 'Stage massé', 'Tutorat PEMF', 'Tutorat T0', 'Visite', 'Accompagnement'];
+const CATEGORIES = {
+  'Stage': '#1f78b4', 'Formation': '#6a3d9a', 'Conseil IEN': '#b15928', 'CAFIPEMF': '#e31a1c',
+  'Réunion': '#33a02c', 'Visite': '#ff7f00', 'Échéance': '#c9191e', 'Examen / jury': '#a6cee3',
+  'Vacances': '#999999', 'Autre': '#555555'
+};
+const CONTEXTES = ['@mail', '@doc', '@Sofia', '@INSPE', '@circo', '@DDA', '@services', '@réunion', '@données'];
+
+const C = (id, type, o = {}) => ({ id, type, ...o });
+// Phase 1 : tables dans un ordre sans référence « vers l'avant ».
+const SCHEMA = [
+  { t: 'Annees', cols: [C('Annee', 'Text'), C('Courante', 'Bool'), C('Debut', 'Date'), C('Fin', 'Date')] },
+  { t: 'Parametres', cols: [C('Cle', 'Text'), C('Valeur', 'Text'), C('Description', 'Text')] },
+  { t: 'Circonscriptions', cols: [C('Code', 'Text'), C('Nom', 'Text'), C('Nom_court', 'Text'), C('Secteur_DDA', 'Text'),
+      C('Notes', 'Text'), C('Libelle', 'Text', { f: '$Nom_court or $Nom' })] },
+  { t: 'Ecoles', cols: [C('UAI', 'Text'), C('Nom', 'Text'), C('Type', 'Choice', { ch: ['Maternelle', 'Élémentaire', 'Primaire'] }),
+      C('Commune', 'Text'), C('Adresse', 'Text'), C('Code_postal', 'Text'), C('Telephone', 'Text'), C('Mail', 'Text'),
+      C('Circonscription', 'Ref:Circonscriptions'), C('Education_prioritaire', 'Text'), C('ULIS', 'Bool'),
+      C('Latitude', 'Numeric'), C('Longitude', 'Numeric'), C('Etat', 'Text'), C('Notes', 'Text'),
+      C('Libelle', 'Text', { f: '" – ".join(x for x in [$Nom, $Commune] if x)' })] },
+  { t: 'Personnes', cols: [C('Civilite', 'Choice', { ch: ['Mme', 'M.'] }), C('Nom', 'Text'), C('Prenom', 'Text'),
+      C('Mail_pro', 'Text'), C('Mail_perso', 'Text'), C('Telephone', 'Text'), C('Num_etudiant', 'Text'), C('Fonction', 'Text'),
+      C('Ecole', 'Ref:Ecoles'), C('Notes', 'Text'),
+      C('Nom_complet', 'Text', { f: '" ".join(x for x in [($Nom or "").upper(), $Prenom] if x)' }),
+      C('Mail', 'Text', { f: '$Mail_pro or $Mail_perso' })] },
+  { t: 'Roles', cols: [C('Personne', 'Ref:Personnes'), C('Role', 'Choice', { ch: ROLES }), C('Annee', 'Ref:Annees'),
+      C('Ecole', 'Ref:Ecoles'), C('Circo_saisie', 'Ref:Circonscriptions'), C('Cycle', 'ChoiceList', { ch: ['1', '2', '3'] }),
+      C('Groupe', 'Text'), C('Modalite', 'Text'), C('Decharge', 'Text'), C('Detail', 'Text'),
+      C('Circonscription', 'Ref:Circonscriptions', { f: '$Circo_saisie or $Ecole.Circonscription' }),
+      C('Courant', 'Bool', { f: 'bool($Annee.Courante)' })] },
+  { t: 'Suivis', cols: [C('Etudiant', 'Ref:Personnes'), C('Encadrant', 'Ref:Personnes'), C('Type', 'Choice', { ch: TYPES_SUIVI }),
+      C('Annee', 'Ref:Annees'), C('Fenetre', 'Text'), C('Debut', 'Date'), C('Fin', 'Date'), C('Ecole', 'Ref:Ecoles'),
+      C('Groupe', 'Text'), C('Statut', 'Choice', { ch: ['Prévu', 'En cours', 'Terminé', 'Annulé'] }), C('Notes', 'Text')] },
+  { t: 'Evenements', cols: [C('Titre', 'Text'), C('Categorie', 'Choice', { ch: Object.keys(CATEGORIES) }),
+      C('Date_debut', 'Date'), C('Date_fin', 'Date'), C('Heure_debut', 'Text'), C('Heure_fin', 'Text'), C('Lieu', 'Text'),
+      C('Publics', 'ChoiceList', { ch: ['Tous', ...ROLES] }), C('Participants', 'RefList:Personnes'),
+      C('Circonscription', 'Ref:Circonscriptions'), C('Annee', 'Ref:Annees'),
+      C('Statut', 'Choice', { ch: ['Prévu', 'Confirmé', 'Fait', 'Annulé'] }), C('Description', 'Text'), C('Source', 'Text')] },
+  { t: 'Actions', cols: [C('Titre', 'Text'), C('Projet', 'Text'), C('Contexte', 'Choice', { ch: CONTEXTES }),
+      C('Statut', 'Choice', { ch: ['À faire', 'En attente', 'Fait', 'Abandonné'] }), C('Echeance', 'Date'), C('Relance', 'Date'),
+      C('En_attente_de', 'Ref:Personnes'), C('Concerne', 'RefList:Personnes'), C('Notes', 'Text')] },
+  { t: 'Modeles', cols: [C('Nom', 'Text'), C('Type', 'Choice', { ch: ['Mail', 'Document'] }), C('Objet', 'Text'),
+      C('Corps', 'Text'), C('Notes', 'Text')] },
+  { t: 'Envois', cols: [C('Date', 'DateTime:Europe/Paris'), C('Lot', 'Text'), C('Type', 'Choice', { ch: ['Mail', 'Document'] }),
+      C('Modele', 'Ref:Modeles'), C('Personne', 'Ref:Personnes'), C('Destinataire', 'Text'), C('Objet', 'Text'),
+      C('Statut', 'Choice', { ch: ['En file', 'Envoyé', 'Généré', 'Erreur', 'Test'] }), C('Message', 'Text')] },
+];
+// Phase 2 : colonnes calculées qui pointent vers des tables créées plus loin.
+const SCHEMA_TARDIF = [
+  ['Circonscriptions', C('IEN', 'Ref:Personnes', { f: 'r = [x for x in Roles.lookupRecords(Circonscription=$id, Role="IEN") if x.Courant]\nreturn r[0].Personne if r else None' })],
+  ['Circonscriptions', C('CPC', 'RefList:Personnes', { f: '[x.Personne for x in Roles.lookupRecords(Circonscription=$id, Role="CPC") if x.Courant]' })],
+  ['Circonscriptions', C('Nb_ecoles', 'Int', { f: 'len(Ecoles.lookupRecords(Circonscription=$id))' })],
+  ['Circonscriptions', C('Nb_PEMF', 'Int', { f: 'len([x for x in Roles.lookupRecords(Circonscription=$id, Role="PEMF") if x.Courant])' })],
+  ['Circonscriptions', C('Nb_MAT', 'Int', { f: 'len([x for x in Roles.lookupRecords(Circonscription=$id, Role="MAT") if x.Courant])' })],
+  ['Ecoles', C('Directeur', 'Ref:Personnes', { f: 'r = [x for x in Roles.lookupRecords(Ecole=$id, Role="Directeur") if x.Courant]\nreturn r[0].Personne if r else None' })],
+  ['Ecoles', C('IEN', 'Ref:Personnes', { f: '$Circonscription.IEN' })],
+  ['Personnes', C('Roles_courants', 'Text', { f: '", ".join(sorted(set(r.Role for r in Roles.lookupRecords(Personne=$id) if r.Courant and r.Role)))' })],
+  ['Personnes', C('Circonscription', 'Ref:Circonscriptions', { f: '$Ecole.Circonscription or next((r.Circonscription for r in Roles.lookupRecords(Personne=$id) if r.Courant and r.Circonscription), None)' })],
+];
+// Colonne affichée dans les cellules de référence.
+const AFFICHAGE = { Annees: 'Annee', Circonscriptions: 'Libelle', Ecoles: 'Libelle', Personnes: 'Nom_complet', Modeles: 'Nom' };
+const TABLES = SCHEMA.map(s => s.t);
+
+const PARAMS_DEFAUT = [
+  ['MAIL_CPD', '', 'Votre adresse : destinataire des tests, du digest hebdo et répondre-à des publipostages'],
+  ['N8N_URL_PUBLIPOSTAGE', '', 'URL « Production » du webhook n8n « Publipostage mails »'],
+  ['N8N_URL_DOCUMENTS', '', 'URL « Production » du webhook n8n « Documents PDF »'],
+  ['N8N_JETON', '', 'Jeton partagé avec n8n (même valeur que dans le nœud Config des workflows)'],
+  ['DOSSIER_PDF', '/CPD/Documents générés', 'Dossier Nextcloud où n8n dépose les PDF'],
+  ['SIGNATURE', 'La conseillère pédagogique départementale auprès du DASEN', 'Texte inséré par {{Signature}}'],
+  ['DEPARTEMENT', '006', "Code département pour l'import des écoles (open data)"],
+];
+const MODELES_DEFAUT = [
+  ['Information stage – encadrant', 'Mail', 'Accueil de stagiaires – {{Annee}}',
+   '<p>{{Madame_Monsieur}},</p>\n<p>Je vous remercie d\'accueillir cette année, dans votre classe de l\'école {{Ecole}}, les étudiants suivants :</p>\n<p>{{Etudiants}}</p>\n<p>Votre IEN, {{IEN}}, est informé(e) de cette organisation.</p>\n<p>Bien cordialement,</p>\n<p>{{Signature}}</p>'],
+  ['Information stage – étudiant', 'Mail', 'Votre lieu de stage – {{Annee}}',
+   '<p>Bonjour {{Prenom}},</p>\n<p>Vous êtes accueilli(e) en stage ({{Role}}, groupe {{Groupe}}) auprès de :</p>\n<p>{{Encadrants}}</p>\n<p>Bien cordialement,</p>\n<p>{{Signature}}</p>'],
+  ['Convocation réunion', 'Mail', 'Convocation – réunion du …',
+   '<p>{{Madame_Monsieur}},</p>\n<p>Vous êtes convié(e) à la réunion qui se tiendra le … à … (lieu).</p>\n<p>Ordre du jour : …</p>\n<p>{{Signature}}</p>'],
+  ['Attestation d\'intervention', 'Document', 'Attestation – {{Nom_complet}}',
+   '<h2 style="text-align:center">ATTESTATION</h2>\n<p>Je soussignée, {{Signature}}, atteste que {{Civilite}} {{Nom_complet}}, {{Role}} ({{Ecole}}, circonscription {{Circonscription}}), est intervenu(e) au titre de l\'année scolaire {{Annee}}.</p>\n<p style="margin-top:40px">Fait à Nice, le {{Date_du_jour}}</p>'],
+];
+
+/* =====================================================================
+   2. OUTILS
+   ===================================================================== */
+const $ = sel => document.querySelector(sel);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const norm = s => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9@.]+/g, ' ').trim();
+const cleNom = (...parts) => norm(parts.join(' ')).replace(/[.@]/g, ' ').split(/\s+/).filter(Boolean).sort().join(' ');
+const liste = v => (Array.isArray(v) && v[0] === 'L') ? v.slice(1) : [];
+const pad = n => String(n).padStart(2, '0');
+const JOUR = 86400;
+function aujourdhui() { const d = new Date(); return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 1000; }
+function fDate(s) { if (s == null || s === '' || typeof s !== 'number') return ''; const d = new Date(s * 1000); return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}`; }
+function isoDate(s) { const d = new Date(s * 1000); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`; }
+function fDateTime(s) { if (!s) return ''; const d = new Date(s * 1000); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function dateLongue(d = new Date()) { return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }); }
+const MOIS = ['janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'];
+function lireDate(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return v > 100000 ? v : Math.round((v - 25569) * JOUR);
+  const s = String(v).trim(); if (!s) return null;
+  let m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
+  if (m) { let y = +m[3]; if (y < 100) y += 2000; return Date.UTC(y, +m[2] - 1, +m[1]) / 1000; }
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]) / 1000;
+  if (/^\d{5}(\.\d+)?$/.test(s)) return Math.round((+s - 25569) * JOUR);
+  m = norm(s).match(/(\d{1,2})(?:er)? (janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre) (\d{4})/);
+  if (m) return Date.UTC(+m[3], MOIS.indexOf(m[2]), +m[1]) / 1000;
+  return null;
+}
+function lireHeure(s) {
+  const m = String(s || '').match(/(\d{1,2})\s*[h:H]\s*(\d{2})?/);
+  return m ? `${pad(+m[1])}:${m[2] || '00'}` : '';
+}
+function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.add('vu'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('vu'), ms); }
+function telecharger(nom, contenu, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([contenu], { type }); const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = nom; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+async function copier(texte) {
+  try { await navigator.clipboard.writeText(texte); toast('Copié dans le presse-papiers'); return; } catch (e) { /* repli */ }
+  const ta = document.createElement('textarea'); ta.value = texte; document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch (e) { /* */ }
+  ta.remove();
+  if (ok) toast('Copié dans le presse-papiers');
+  else modale('Copier manuellement', `<p class="muted">Le navigateur bloque la copie automatique : sélectionnez le texte (Ctrl+A) puis Ctrl+C.</p><textarea rows="8">${esc(texte)}</textarea>`);
+}
+function modale(titre, html, boutons = [{ label: 'Fermer', valeur: null }]) {
+  return new Promise(resolve => {
+    $('#modale').innerHTML = `<h2>${esc(titre)}</h2><div>${html}</div><div class="pied">${boutons.map((b, i) =>
+      `<button class="btn ${b.primaire ? 'primaire' : ''} ${b.danger ? 'danger' : ''}" data-i="${i}">${esc(b.label)}</button>`).join('')}</div>`;
+    $('#voile').classList.add('ouvert');
+    $('#modale').querySelectorAll('.pied button').forEach(btn => btn.onclick = () => {
+      const b = boutons[+btn.dataset.i]; const val = typeof b.valeur === 'function' ? b.valeur() : b.valeur;
+      $('#voile').classList.remove('ouvert'); resolve(val);
+    });
+  });
+}
+function parseTableau(texte) {
+  const lignes = texte.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+  if (!lignes.trim()) return [];
+  const premiere = lignes.split('\n')[0];
+  const sep = premiere.includes('\t') ? '\t' : ((premiere.match(/;/g) || []).length >= (premiere.match(/,/g) || []).length ? ';' : ',');
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < lignes.length; i++) {
+    const c = lignes[i];
+    if (q) { if (c === '"') { if (lignes[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+    else if (c === '"' && cell === '') q = true;
+    else if (c === sep) { row.push(cell); cell = ''; }
+    else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += c;
+  }
+  row.push(cell); rows.push(row);
+  return rows.filter(r => r.some(x => String(x).trim() !== ''));
+}
+function scinderNomComplet(s) {
+  // « Morgane ALBIN » ou « ANZIANI Lola » : les mots en capitales forment le nom.
+  const mots = String(s || '').trim().split(/\s+/).filter(Boolean);
+  const estMaj = w => w.length > 1 && w === w.toUpperCase() && /[A-ZÀ-Ý]/.test(w);
+  const nom = mots.filter(estMaj), prenom = mots.filter(w => !estMaj(w));
+  if (nom.length && prenom.length) return { Nom: nom.join(' '), Prenom: prenom.join(' ') };
+  if (mots.length >= 2) return { Prenom: mots[0], Nom: mots.slice(1).join(' ') };
+  return { Nom: mots.join(' '), Prenom: '' };
+}
+
+/* =====================================================================
+   3. DONNÉES
+   ===================================================================== */
+const D = {}; const IDX = {};
+const S = { onglet: 'dash', annee: null, selection: null, recherche: '', cal: null, calFiltres: null, listes: null, imp: null, pret: false };
+
+function enLignes(colonnes) {
+  const ids = colonnes.id || []; const cles = Object.keys(colonnes);
+  return ids.map((id, i) => { const o = {}; for (const k of cles) o[k] = colonnes[k][i]; return o; });
+}
+async function charger() {
+  let presentes = [];
+  try { const meta = await grist.docApi.fetchTable('_grist_Tables'); presentes = meta.tableId || []; }
+  catch (e) { presentes = []; }
+  S.manquantes = TABLES.filter(t => !presentes.includes(t));
+  for (const t of TABLES) {
+    if (S.manquantes.includes(t)) { D[t] = []; IDX[t] = new Map(); continue; }
+    try { D[t] = enLignes(await grist.docApi.fetchTable(t)); } catch (e) { D[t] = []; }
+    IDX[t] = new Map(D[t].map(r => [r.id, r]));
+  }
+  // Index utiles
+  IDX.rolesParPersonne = grouper(D.Roles, 'Personne');
+  IDX.suivisEtudiant = grouper(D.Suivis, 'Etudiant');
+  IDX.suivisEncadrant = grouper(D.Suivis, 'Encadrant');
+  IDX.personnesParMail = new Map(); IDX.personnesParNom = new Map();
+  for (const p of D.Personnes) {
+    for (const m of [p.Mail_pro, p.Mail_perso]) if (m) IDX.personnesParMail.set(String(m).trim().toLowerCase(), p);
+    const k = cleNom(p.Nom, p.Prenom); if (k) { if (!IDX.personnesParNom.has(k)) IDX.personnesParNom.set(k, []); IDX.personnesParNom.get(k).push(p); }
+  }
+  const courante = D.Annees.find(a => a.Courante) || D.Annees[D.Annees.length - 1];
+  if (!S.annee || !IDX.Annees.has(S.annee)) S.annee = courante ? courante.id : null;
+  remplirAnnees();
+}
+function grouper(rows, cle) { const m = new Map(); for (const r of rows) { const k = r[cle]; if (!k) continue; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; }
+async function agir(actions, msg) {
+  const res = await grist.docApi.applyUserActions(actions);
+  await charger(); if (msg) toast(msg); return res;
+}
+let rechargementPrevu = null;
+function rechargerPlusTard() { clearTimeout(rechargementPrevu); rechargementPrevu = setTimeout(async () => { await charger(); rendre(); }, 700); }
+
+// Accesseurs
+const P = id => IDX.Personnes.get(id);
+const E = id => IDX.Ecoles.get(id);
+const CI = id => IDX.Circonscriptions.get(id);
+const nomP = id => { const p = P(id); return p ? (p.Nom_complet || `${(p.Nom || '').toUpperCase()} ${p.Prenom || ''}`.trim()) : ''; };
+const libE = id => { const e = E(id); return e ? (e.Libelle || e.Nom || '') : ''; };
+const libC = id => { const c = CI(id); return c ? (c.Libelle || c.Nom_court || c.Nom || '') : ''; };
+const libA = id => (IDX.Annees.get(id) || {}).Annee || '';
+const param = cle => { const r = D.Parametres.find(x => x.Cle === cle); return r ? String(r.Valeur || '').trim() : ''; };
+const rolesDe = (pid, annee = S.annee) => (IDX.rolesParPersonne.get(pid) || []).filter(r => !annee || r.Annee === annee);
+function circoDe(p) {
+  if (!p) return null;
+  if (p.Circonscription) return p.Circonscription;
+  const e = E(p.Ecole); if (e && e.Circonscription) return e.Circonscription;
+  const r = rolesDe(p.id).find(x => x.Circonscription); return r ? r.Circonscription : null;
+}
+function ienDe(circoId) { const c = CI(circoId); if (!c) return null; if (c.IEN) return c.IEN;
+  const r = D.Roles.find(x => x.Role === 'IEN' && x.Annee === S.annee && x.Circonscription === circoId); return r ? r.Personne : null; }
+function directeurDe(ecoleId) { const e = E(ecoleId); if (e && e.Directeur) return e.Directeur;
+  const r = D.Roles.find(x => x.Role === 'Directeur' && x.Annee === S.annee && x.Ecole === ecoleId); return r ? r.Personne : null; }
+const lien = (type, id, texte) => id ? `<button class="lien" data-ouvrir="${type}:${id}">${esc(texte)}</button>` : '';
+const lienP = id => lien('p', id, nomP(id));
+const lienE = id => lien('e', id, libE(id));
+const lienC = id => lien('c', id, libC(id));
+const mailto = m => m ? `<a href="mailto:${esc(m)}">${esc(m)}</a>` : '<span class="muted">—</span>';
+const badgeCat = c => `<span class="pastille" style="background:${CATEGORIES[c] || '#555'}"></span>${esc(c || '')}`;
+
+/* =====================================================================
+   4. RENDU GÉNÉRAL
+   ===================================================================== */
+function remplirAnnees() {
+  const sel = $('#annee');
+  sel.innerHTML = D.Annees.map(a => `<option value="${a.id}" ${a.id === S.annee ? 'selected' : ''}>${esc(a.Annee)}${a.Courante ? ' (courante)' : ''}</option>`).join('');
+}
+function rendre() {
+  document.querySelectorAll('#onglets button').forEach(b => b.classList.toggle('actif', b.dataset.tab === S.onglet));
+  if (S.manquantes && S.manquantes.length && S.onglet !== 'settings') { rendreInstallation(); return; }
+  ({ dash: rendreTableau, search: rendreRecherche, cal: rendreCalendrier, lists: rendreListes, import: rendreImport, settings: rendreReglages })[S.onglet]();
+}
+function rendreInstallation() {
+  const vide = S.manquantes.length === TABLES.length;
+  $('#main').innerHTML = `<div class="carte" style="max-width:720px">
+    <h2>${vide ? 'Bienvenue : initialisons le document' : 'Structure incomplète'}</h2>
+    <p>${vide ? 'Ce document ne contient pas encore les tables du centre de contrôle.' : 'Tables manquantes :'}
+    ${vide ? '' : S.manquantes.map(t => `<span class="badge">${t}</span>`).join(' ')}</p>
+    <p>Le bouton ci-dessous crée ${vide ? 'les ' + TABLES.length + ' tables' : 'les tables manquantes'} (personnes, rôles, écoles, circonscriptions, suivis, événements, actions, modèles, journal des envois, paramètres), leurs colonnes calculées et quelques données de départ (années scolaires, paramètres, modèles de courriers). Rien n'est supprimé.</p>
+    <p class="muted petit">Le widget doit avoir l'accès « Accès complet au document » (panneau de droite → Widget → Accès).</p>
+    <button class="btn primaire" id="btn-init">Initialiser la structure</button> <span id="init-etat" class="muted"></span></div>`;
+  $('#btn-init').onclick = initialiser;
+}
+
+/* =====================================================================
+   5. INITIALISATION DU DOCUMENT
+   ===================================================================== */
+function infoCol(c) {
+  const o = { type: c.type, isFormula: !!c.f, formula: c.f || '' };
+  const wo = {};
+  if (c.ch) wo.choices = c.ch;
+  if (c.type === 'Date') wo.dateFormat = 'DD/MM/YYYY';
+  if (c.type.startsWith('DateTime')) { wo.dateFormat = 'DD/MM/YYYY'; wo.timeFormat = 'HH:mm'; }
+  if (Object.keys(wo).length) o.widgetOptions = JSON.stringify(wo);
+  return o;
+}
+async function initialiser() {
+  const etat = $('#init-etat'); const bouton = $('#btn-init'); bouton.disabled = true;
+  try {
+    const manquantes = new Set(S.manquantes);
+    etat.textContent = 'Création des tables…';
+    const actions = [];
+    for (const s of SCHEMA) if (manquantes.has(s.t)) actions.push(['AddTable', s.t, s.cols.map(c => ({ id: c.id, ...infoCol(c) }))]);
+    for (const [t, c] of SCHEMA_TARDIF) if (manquantes.has(t)) actions.push(['AddColumn', t, c.id, infoCol(c)]);
+    if (actions.length) await grist.docApi.applyUserActions(actions);
+
+    etat.textContent = 'Réglage de l\'affichage des références…';
+    await reglerAffichageRefs();
+
+    etat.textContent = 'Données de départ…';
+    const init = [];
+    if (manquantes.has('Annees')) {
+      init.push(['BulkAddRecord', 'Annees', [null, null, null], {
+        Annee: ['2025-2026', '2026-2027', '2027-2028'], Courante: [false, true, false],
+        Debut: [Date.UTC(2025, 8, 1) / 1000, Date.UTC(2026, 8, 1) / 1000, Date.UTC(2027, 8, 1) / 1000],
+        Fin: [Date.UTC(2026, 7, 31) / 1000, Date.UTC(2027, 7, 31) / 1000, Date.UTC(2028, 7, 31) / 1000] }]);
+    }
+    if (manquantes.has('Parametres')) init.push(['BulkAddRecord', 'Parametres', PARAMS_DEFAUT.map(() => null), {
+      Cle: PARAMS_DEFAUT.map(p => p[0]), Valeur: PARAMS_DEFAUT.map(p => p[1]), Description: PARAMS_DEFAUT.map(p => p[2]) }]);
+    if (manquantes.has('Modeles')) init.push(['BulkAddRecord', 'Modeles', MODELES_DEFAUT.map(() => null), {
+      Nom: MODELES_DEFAUT.map(m => m[0]), Type: MODELES_DEFAUT.map(m => m[1]), Objet: MODELES_DEFAUT.map(m => m[2]), Corps: MODELES_DEFAUT.map(m => m[3]) }]);
+    if (init.length) await grist.docApi.applyUserActions(init);
+    await charger();
+    etat.textContent = '';
+    await modale('Structure créée', `<p class="ok">Les tables sont en place.</p>
+      <p>Prochaines étapes conseillées :</p><ol>
+      <li><b>Réglages</b> → importer les écoles publiques du département (open data) ;</li>
+      <li><b>Réglages</b> → renseigner votre mail et, plus tard, les URL des webhooks n8n ;</li>
+      <li><b>Import</b> → coller vos listes (PEMF, MAT, étudiants, IEN…) et vos calendriers.</li></ol>`);
+    S.onglet = 'settings'; rendre();
+  } catch (e) {
+    console.error(e); etat.innerHTML = `<span class="ko">Erreur : ${esc(e.message || e)}</span>`; bouton.disabled = false;
+  }
+}
+async function reglerAffichageRefs() {
+  const tabs = enLignes(await grist.docApi.fetchTable('_grist_Tables'));
+  const cols = enLignes(await grist.docApi.fetchTable('_grist_Tables_column'));
+  const tableIdDe = new Map(tabs.map(t => [t.id, t.tableId]));
+  const colDe = (tableId, colId) => cols.find(c => tableIdDe.get(c.parentId) === tableId && c.colId === colId);
+  const actions = [];
+  for (const c of cols) {
+    const m = String(c.type || '').match(/^(Ref|RefList):(\w+)$/);
+    if (!m || !AFFICHAGE[m[2]] || !TABLES.includes(tableIdDe.get(c.parentId))) continue;
+    const cible = colDe(m[2], AFFICHAGE[m[2]]);
+    if (!cible || c.visibleCol === cible.id) continue;
+    actions.push(['UpdateRecord', '_grist_Tables_column', c.id, { visibleCol: cible.id }]);
+    actions.push(['SetDisplayFormula', tableIdDe.get(c.parentId), null, c.id, `$${c.colId}.${AFFICHAGE[m[2]]}`]);
+  }
+  if (actions.length) await grist.docApi.applyUserActions(actions);
+}
+
+/* =====================================================================
+   6. TABLEAU DE BORD
+   ===================================================================== */
+function calculerAlertes() {
+  const A = S.annee, auj = aujourdhui();
+  const rolesAnnee = D.Roles.filter(r => r.Annee === A);
+  const etudiants = rolesAnnee.filter(r => ROLES_ETUDIANTS.includes(r.Role));
+  const suivisAnnee = D.Suivis.filter(s => s.Annee === A && s.Statut !== 'Annulé');
+  const avecSuivi = new Set(suivisAnnee.map(s => s.Etudiant));
+  const encadres = new Set(suivisAnnee.map(s => s.Encadrant));
+  const nomsVus = new Map();
+  for (const p of D.Personnes) { const k = cleNom(p.Nom, p.Prenom); if (!k) continue; nomsVus.set(k, [...(nomsVus.get(k) || []), p.id]); }
+  const al = [
+    { cle: 'sansSuivi', niveau: 'rouge', label: 'étudiants / stagiaires sans encadrant', ids: [...new Set(etudiants.filter(r => !avecSuivi.has(r.Personne)).map(r => r.Personne))] },
+    { cle: 'sansIEN', niveau: 'rouge', label: 'circonscriptions sans IEN cette année', circos: D.Circonscriptions.filter(c => !ienDe(c.id)).map(c => c.id) },
+    { cle: 'retard', niveau: 'rouge', label: 'actions en retard', actions: D.Actions.filter(a => a.Echeance && a.Echeance < auj && !['Fait', 'Abandonné'].includes(a.Statut)).map(a => a.id) },
+    { cle: 'relance', niveau: 'orange', label: 'relances à faire', actions: D.Actions.filter(a => a.Statut === 'En attente' && a.Relance && a.Relance <= auj).map(a => a.id) },
+    { cle: 'erreurs', niveau: 'orange', label: 'envois en erreur', envois: D.Envois.filter(e => e.Statut === 'Erreur').map(e => e.id) },
+    { cle: 'sansMail', niveau: 'orange', label: 'personnes actives sans adresse mail', ids: [...new Set(rolesAnnee.map(r => r.Personne))].filter(id => { const p = P(id); return p && !p.Mail_pro && !p.Mail_perso; }) },
+    { cle: 'sansEcole', niveau: 'orange', label: 'PEMF / MAT / directeurs sans école', ids: [...new Set(rolesAnnee.filter(r => ['PEMF', 'MAT', 'Directeur'].includes(r.Role) && !r.Ecole && !(P(r.Personne) || {}).Ecole).map(r => r.Personne))] },
+    { cle: 'encadrantsLibres', niveau: 'vert', label: 'PEMF / MAT sans étudiant affecté', ids: [...new Set(rolesAnnee.filter(r => ROLES_ENCADRANTS.includes(r.Role) && !encadres.has(r.Personne)).map(r => r.Personne))] },
+    { cle: 'doublons', niveau: 'orange', label: 'doublons potentiels (même nom)', ids: [...nomsVus.values()].filter(v => v.length > 1).flat() },
+  ];
+  for (const a of al) a.n = (a.ids || a.circos || a.actions || a.envois || []).length;
+  return al;
+}
+function rendreTableau() {
+  const A = S.annee, auj = aujourdhui();
+  const rolesAnnee = D.Roles.filter(r => r.Annee === A);
+  const compte = {}; for (const r of rolesAnnee) compte[r.Role] = (compte[r.Role] || new Set()).add(r.Personne);
+  const kpis = ROLES.filter(r => compte[r]).map(r => `<div class="kpi" data-kpi="${esc(r)}"><div class="v">${compte[r].size}</div><div class="l">${esc(r)}</div></div>`).join('');
+  const alertes = calculerAlertes();
+  const evts = D.Evenements.filter(e => e.Date_debut && (e.Date_fin || e.Date_debut) >= auj && e.Date_debut <= auj + 14 * JOUR && e.Statut !== 'Annulé')
+    .sort((a, b) => a.Date_debut - b.Date_debut || String(a.Heure_debut || '').localeCompare(String(b.Heure_debut || '')));
+  const actions = D.Actions.filter(a => !['Fait', 'Abandonné'].includes(a.Statut) && a.Echeance && a.Echeance <= auj + 7 * JOUR).sort((a, b) => a.Echeance - b.Echeance);
+  $('#main').innerHTML = `
+    <div class="grille kpis">${kpis || '<p class="muted">Aucun rôle saisi pour cette année. Commencez par l\'onglet Import.</p>'}
+      <div class="kpi" data-kpi="__ecoles"><div class="v">${D.Ecoles.length}</div><div class="l">Écoles</div></div>
+      <div class="kpi" data-kpi="__circos"><div class="v">${D.Circonscriptions.length}</div><div class="l">Circonscriptions</div></div>
+      <div class="kpi" data-kpi="__personnes"><div class="v">${D.Personnes.length}</div><div class="l">Personnes (toutes années)</div></div>
+    </div>
+    <div class="deux-col" style="margin-top:14px">
+      <div>
+        <h3>Alertes</h3>
+        ${alertes.filter(a => a.n).map(a => `<div class="alerte ${a.niveau}" data-alerte="${a.cle}"><span class="n">${a.n}</span><span>${esc(a.label)}</span></div>`).join('') || '<p class="ok">Aucune alerte 🎉</p>'}
+        <h3>Actions à échéance (7 jours) et en retard</h3>
+        ${actions.length ? `<table class="t"><tr><th>Échéance</th><th>Action</th><th>Contexte</th><th>Statut</th></tr>${actions.map(a => `<tr><td class="${a.Echeance < auj ? 'ko' : ''}">${fDate(a.Echeance)}</td><td>${esc(a.Titre)}${a.Projet ? ` <span class="muted petit">(${esc(a.Projet)})</span>` : ''}</td><td>${esc(a.Contexte || '')}</td><td>${esc(a.Statut || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Rien d\'urgent.</p>'}
+      </div>
+      <div>
+        <h3>Les 14 prochains jours</h3>
+        ${evts.length ? `<table class="t"><tr><th>Date</th><th>Événement</th><th>Lieu</th></tr>${evts.map(e => `<tr><td style="white-space:nowrap">${fDate(e.Date_debut)}${e.Date_fin && e.Date_fin !== e.Date_debut ? ' → ' + fDate(e.Date_fin) : ''}<br><span class="muted petit">${esc([e.Heure_debut, e.Heure_fin].filter(Boolean).join(' – '))}</span></td><td>${badgeCat(e.Categorie)} <b>${esc(e.Titre)}</b>${liste(e.Publics).length ? `<br>${liste(e.Publics).map(x => `<span class="badge">${esc(x)}</span>`).join('')}` : ''}</td><td>${esc(e.Lieu || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun événement.</p>'}
+        <h3>Derniers envois</h3>
+        ${D.Envois.length ? `<table class="t"><tr><th>Date</th><th>Destinataire</th><th>Objet</th><th>Statut</th></tr>${[...D.Envois].sort((a, b) => (b.Date || 0) - (a.Date || 0)).slice(0, 8).map(e => `<tr><td>${fDateTime(e.Date)}</td><td>${lienP(e.Personne) || esc(e.Destinataire)}</td><td>${esc(e.Objet || '')}</td><td class="${e.Statut === 'Erreur' ? 'ko' : e.Statut === 'Envoyé' || e.Statut === 'Généré' ? 'ok' : ''}">${esc(e.Statut || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun envoi.</p>'}
+      </div>
+    </div>`;
+  document.querySelectorAll('[data-alerte]').forEach(el => el.onclick = () => ouvrirAlerte(alertes.find(a => a.cle === el.dataset.alerte)));
+  document.querySelectorAll('[data-kpi]').forEach(el => el.onclick = () => {
+    const k = el.dataset.kpi;
+    if (k.startsWith('__')) { S.onglet = 'search'; S.recherche = ''; S.filtreType = k === '__ecoles' ? 'e' : k === '__circos' ? 'c' : 'p'; rendre(); return; }
+    S.listes = { ...(S.listes || etatListesDefaut()), roles: [k], circos: [], groupe: '', cycle: '' }; S.onglet = 'lists'; rendre();
+  });
+}
+function ouvrirAlerte(a) {
+  let corps = '';
+  if (a.ids) corps = `<table class="t"><tr><th>Personne</th><th>Rôles</th><th>Mail</th></tr>${a.ids.map(id => { const p = P(id) || {}; return `<tr><td>${lienP(id)}</td><td>${rolesDe(id).map(r => `<span class="badge role">${esc(r.Role)}</span>`).join('')}</td><td>${esc(p.Mail || '')}</td></tr>`; }).join('')}</table>`;
+  if (a.circos) corps = `<ul class="simple">${a.circos.map(id => `<li>${lienC(id)}</li>`).join('')}</ul><p class="muted petit">Ajoutez un rôle « IEN » (année courante, circonscription renseignée) dans la fiche de l'inspecteur·rice.</p>`;
+  if (a.actions) corps = `<ul class="simple">${a.actions.map(id => { const x = IDX.Actions.get(id); return `<li>${fDate(x.Echeance || x.Relance)} — ${esc(x.Titre)} ${x.En_attente_de ? '(attente : ' + lienP(x.En_attente_de) + ')' : ''}</li>`; }).join('')}</ul>`;
+  if (a.envois) corps = `<table class="t"><tr><th>Date</th><th>Destinataire</th><th>Message</th></tr>${a.envois.map(id => { const x = IDX.Envois.get(id); return `<tr><td>${fDateTime(x.Date)}</td><td>${esc(x.Destinataire)}</td><td class="ko">${esc(x.Message || '')}</td></tr>`; }).join('')}</table>`;
+  modale(`${a.n} ${a.label}`, `<div class="scroll-table">${corps}</div>`);
+}
+
+/* =====================================================================
+   7. RECHERCHE ET FICHES 360°
+   ===================================================================== */
+function indexRecherche() {
+  const items = [];
+  for (const p of D.Personnes) items.push({ type: 'p', id: p.id, t1: nomP(p.id), t2: [rolesDe(p.id).map(r => r.Role).join(', '), libE(p.Ecole)].filter(Boolean).join(' · '),
+    k: norm([p.Nom, p.Prenom, p.Mail_pro, p.Mail_perso, p.Num_etudiant, p.Telephone, rolesDe(p.id).map(r => r.Role + ' ' + (r.Groupe || '')).join(' ')].join(' ')) });
+  for (const e of D.Ecoles) items.push({ type: 'e', id: e.id, t1: e.Nom, t2: [e.Commune, e.UAI, libC(e.Circonscription)].filter(Boolean).join(' · '), k: norm([e.Nom, e.Commune, e.UAI, e.Code_postal].join(' ')) });
+  for (const c of D.Circonscriptions) items.push({ type: 'c', id: c.id, t1: 'Circonscription ' + libC(c.id), t2: nomP(ienDe(c.id)), k: norm(['circonscription circo', c.Nom, c.Nom_court, c.Code].join(' ')) });
+  return items;
+}
+function rendreRecherche() {
+  $('#main').innerHTML = `<div class="recherche">
+    <div>
+      <div class="barre"><input type="search" id="q" placeholder="Nom, mail, école, commune, UAI, groupe…" style="flex:1" value="${esc(S.recherche)}"></div>
+      <div class="chips" id="filtre-type" style="margin-bottom:8px">
+        ${[['', 'Tout'], ['p', 'Personnes'], ['e', 'Écoles'], ['c', 'Circos']].map(([v, l]) => `<span class="chip ${(S.filtreType || '') === v ? 'on' : ''}" data-v="${v}">${l}</span>`).join('')}
+        <span class="spacer"></span><button class="btn" id="btn-nouv-p" title="Créer une personne">+ Personne</button>
+      </div>
+      <div class="resultats" id="res"></div>
+    </div>
+    <div class="fiche carte" id="fiche"><p class="muted">Sélectionnez un résultat pour afficher sa fiche.</p></div>
+  </div>`;
+  const items = indexRecherche();
+  const majRes = () => {
+    const mots = norm(S.recherche).split(' ').filter(Boolean);
+    let r = items.filter(it => (!S.filtreType || it.type === S.filtreType) && mots.every(m => it.k.includes(m)));
+    const total = r.length; r = r.slice(0, 200);
+    $('#res').innerHTML = r.map(it => `<div class="res ${S.selection && S.selection.type === it.type && S.selection.id === it.id ? 'sel' : ''}" data-ouvrir="${it.type}:${it.id}">
+      <div class="t1">${it.type === 'e' ? '🏫 ' : it.type === 'c' ? '🗺️ ' : ''}${esc(it.t1)}</div><div class="t2">${esc(it.t2)}</div></div>`).join('')
+      + (total > 200 ? `<div class="res muted">… ${total - 200} autres résultats, affinez la recherche.</div>` : '')
+      + (!total ? '<div class="res muted">Aucun résultat.</div>' : '');
+  };
+  $('#q').oninput = e => { S.recherche = e.target.value; majRes(); };
+  document.querySelectorAll('#filtre-type .chip').forEach(c => c.onclick = () => { S.filtreType = c.dataset.v; rendreRecherche(); });
+  $('#btn-nouv-p').onclick = () => editerPersonne(null);
+  majRes();
+  if (S.selection) afficherFiche(S.selection.type, S.selection.id);
+  $('#q').focus();
+}
+function ouvrir(type, id) {
+  S.selection = { type, id: +id };
+  if (S.onglet !== 'search') { S.onglet = 'search'; $('#voile').classList.remove('ouvert'); rendre(); return; }
+  document.querySelectorAll('.res').forEach(r => r.classList.toggle('sel', r.dataset.ouvrir === `${type}:${id}`));
+  afficherFiche(type, +id);
+}
+function afficherFiche(type, id) {
+  const el = $('#fiche'); if (!el) return;
+  el.innerHTML = type === 'p' ? fichePersonne(id) : type === 'e' ? ficheEcole(id) : ficheCirco(id);
+  el.querySelectorAll('[data-edit-p]').forEach(b => b.onclick = () => editerPersonne(+b.dataset.editP));
+  el.querySelectorAll('[data-add-role]').forEach(b => b.onclick = () => ajouterRole(+b.dataset.addRole));
+  el.querySelectorAll('[data-add-suivi]').forEach(b => b.onclick = () => ajouterSuivi(+b.dataset.addSuivi));
+  el.querySelectorAll('[data-copier]').forEach(b => b.onclick = () => copier(b.dataset.copier));
+  el.scrollTop = 0;
+}
+function evenementsPour({ personneId = null, circoId = null, ecoleId = null }) {
+  const auj = aujourdhui();
+  const p = personneId ? P(personneId) : null;
+  const roles = p ? new Set(rolesDe(p.id).map(r => r.Role)) : new Set();
+  const circo = p ? circoDe(p) : circoId;
+  return D.Evenements.filter(e => {
+    if (!e.Date_debut || (e.Date_fin || e.Date_debut) < auj || e.Statut === 'Annulé') return false;
+    if (e.Circonscription && circo && e.Circonscription !== circo) return false;
+    if (p) { if (liste(e.Participants).includes(p.id)) return true; const pub = liste(e.Publics); return pub.includes('Tous') || pub.some(x => roles.has(x)); }
+    if (circoId || ecoleId) return e.Circonscription === circo;
+    return false;
+  }).sort((a, b) => a.Date_debut - b.Date_debut).slice(0, 12);
+}
+function tableEvts(evts) {
+  return evts.length ? `<table class="t">${evts.map(e => `<tr><td style="white-space:nowrap">${fDate(e.Date_debut)}${e.Date_fin && e.Date_fin !== e.Date_debut ? ' → ' + fDate(e.Date_fin) : ''}</td><td>${badgeCat(e.Categorie)} ${esc(e.Titre)}</td><td class="muted">${esc([e.Heure_debut, e.Heure_fin].filter(Boolean).join('–'))} ${esc(e.Lieu || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun événement à venir.</p>';
+}
+function fichePersonne(id) {
+  const p = P(id); if (!p) return '<p class="muted">Personne introuvable.</p>';
+  const tousRoles = (IDX.rolesParPersonne.get(id) || []).sort((a, b) => libA(b.Annee).localeCompare(libA(a.Annee)));
+  const circo = circoDe(p); const ien = ienDe(circo);
+  const commeEtu = (IDX.suivisEtudiant.get(id) || []).filter(s => !S.annee || s.Annee === S.annee);
+  const commeEnc = (IDX.suivisEncadrant.get(id) || []).filter(s => !S.annee || s.Annee === S.annee);
+  const actions = D.Actions.filter(a => (a.En_attente_de === id || liste(a.Concerne).includes(id)) && !['Fait', 'Abandonné'].includes(a.Statut));
+  const envois = D.Envois.filter(e => e.Personne === id).sort((a, b) => (b.Date || 0) - (a.Date || 0)).slice(0, 8);
+  const ligneSuivi = (s, autre) => `<tr><td>${lienP(autre)}</td><td>${esc(s.Type || '')}</td><td>${esc(s.Fenetre || '')}${s.Debut ? ` <span class="muted petit">${fDate(s.Debut)}→${fDate(s.Fin)}</span>` : ''}</td><td>${lienE(s.Ecole || (P(s.Encadrant) || {}).Ecole)}</td><td>${esc(s.Groupe || '')}</td></tr>`;
+  const mails = [p.Mail_pro, p.Mail_perso].filter(Boolean);
+  return `<div class="entete"><h2>${esc(p.Civilite ? p.Civilite + ' ' : '')}${esc(nomP(id))}</h2>
+      ${rolesDe(id).map(r => `<span class="badge role">${esc(r.Role)}${r.Groupe ? ' · ' + esc(r.Groupe) : ''}</span>`).join('')}
+      <span class="spacer"></span>
+      ${mails.length ? `<button class="btn" data-copier="${esc(mails[0])}">Copier le mail</button>` : ''}
+      <button class="btn" data-edit-p="${id}">Modifier</button></div>
+    <div class="deux-col">
+      <div><h3>Coordonnées</h3><dl class="kv">
+        <dt>Mail pro</dt><dd>${mailto(p.Mail_pro)}</dd>
+        <dt>Mail perso</dt><dd>${mailto(p.Mail_perso)}</dd>
+        <dt>Téléphone</dt><dd>${p.Telephone ? `<a href="tel:${esc(String(p.Telephone).replace(/\s/g, ''))}">${esc(p.Telephone)}</a>` : '<span class="muted">—</span>'}</dd>
+        ${p.Num_etudiant ? `<dt>N° étudiant</dt><dd>${esc(p.Num_etudiant)}</dd>` : ''}
+        ${p.Fonction ? `<dt>Fonction</dt><dd>${esc(p.Fonction)}</dd>` : ''}
+        <dt>École</dt><dd>${lienE(p.Ecole) || '<span class="muted">—</span>'}</dd>
+        <dt>Circonscription</dt><dd>${lienC(circo) || '<span class="muted">—</span>'}</dd>
+        <dt>IEN</dt><dd>${ien ? lienP(ien) : '<span class="muted">—</span>'}</dd>
+      </dl>${p.Notes ? `<h3>Notes</h3><p style="white-space:pre-wrap">${esc(p.Notes)}</p>` : ''}</div>
+      <div><h3>Rôles (toutes années) <button class="btn petit" data-add-role="${id}">+ rôle</button></h3>
+        ${tousRoles.length ? `<table class="t"><tr><th>Année</th><th>Rôle</th><th>Détail</th></tr>${tousRoles.map(r => `<tr class="${r.Annee === S.annee ? '' : 'muted'}"><td>${esc(libA(r.Annee))}</td><td><b>${esc(r.Role)}</b></td><td>${[r.Groupe && 'Groupe ' + esc(r.Groupe), liste(r.Cycle).length && 'Cycle ' + liste(r.Cycle).join('/'), r.Modalite && esc(r.Modalite), r.Decharge && 'Décharge ' + esc(r.Decharge), r.Ecole && r.Ecole !== p.Ecole && lienE(r.Ecole), r.Circo_saisie && lienC(r.Circo_saisie), r.Detail && esc(r.Detail)].filter(Boolean).join(' · ')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun rôle.</p>'}
+      </div>
+    </div>
+    ${commeEtu.length || commeEnc.length || rolesDe(id).some(r => ROLES_ENCADRANTS.includes(r.Role) || ROLES_ETUDIANTS.includes(r.Role)) ? `
+      <h3>Suivis ${esc(libA(S.annee))} <button class="btn petit" data-add-suivi="${id}">+ suivi</button></h3>
+      ${commeEtu.length ? `<p class="petit muted">Encadré·e par :</p><table class="t"><tr><th>Encadrant</th><th>Type</th><th>Fenêtre</th><th>École</th><th>Groupe</th></tr>${commeEtu.map(s => ligneSuivi(s, s.Encadrant)).join('')}</table>` : ''}
+      ${commeEnc.length ? `<p class="petit muted">Encadre :</p><table class="t"><tr><th>Étudiant</th><th>Type</th><th>Fenêtre</th><th>École</th><th>Groupe</th></tr>${commeEnc.map(s => ligneSuivi(s, s.Etudiant)).join('')}</table>` : ''}
+      ${!commeEtu.length && !commeEnc.length ? '<p class="muted">Aucun suivi cette année.</p>' : ''}` : ''}
+    <h3>Prochains événements</h3>${tableEvts(evenementsPour({ personneId: id }))}
+    ${actions.length ? `<h3>Actions en cours</h3><ul class="simple">${actions.map(a => `<li>${a.Echeance ? fDate(a.Echeance) + ' — ' : ''}${esc(a.Titre)} <span class="muted">(${esc(a.Statut || '')})</span></li>`).join('')}</ul>` : ''}
+    ${envois.length ? `<h3>Historique des envois</h3><table class="t">${envois.map(e => `<tr><td>${fDateTime(e.Date)}</td><td>${esc(e.Objet || '')}</td><td>${esc(e.Statut || '')}</td></tr>`).join('')}</table>` : ''}`;
+}
+function ficheEcole(id) {
+  const e = E(id); if (!e) return '<p class="muted">École introuvable.</p>';
+  const dir = directeurDe(id); const ien = ienDe(e.Circonscription);
+  const roles = D.Roles.filter(r => r.Annee === S.annee && (r.Ecole === id || (!r.Ecole && (P(r.Personne) || {}).Ecole === id)));
+  const suivis = D.Suivis.filter(s => s.Annee === S.annee && (s.Ecole === id || (!s.Ecole && (P(s.Encadrant) || {}).Ecole === id)));
+  return `<div class="entete"><h2>🏫 ${esc(e.Nom)}</h2><span class="badge">${esc(e.Type || '')}</span><span class="badge">${esc(e.UAI || '')}</span>${e.Education_prioritaire ? `<span class="badge">${esc(e.Education_prioritaire)}</span>` : ''}${e.ULIS ? '<span class="badge">ULIS</span>' : ''}
+      <span class="spacer"></span>${e.Mail ? `<button class="btn" data-copier="${esc(e.Mail)}">Copier le mail</button>` : ''}</div>
+    <div class="deux-col"><div><h3>Coordonnées</h3><dl class="kv">
+      <dt>Adresse</dt><dd>${esc([e.Adresse, [e.Code_postal, e.Commune].filter(Boolean).join(' ')].filter(Boolean).join(', '))}</dd>
+      <dt>Mail</dt><dd>${mailto(e.Mail)}</dd><dt>Téléphone</dt><dd>${esc(e.Telephone || '—')}</dd>
+      <dt>Circonscription</dt><dd>${lienC(e.Circonscription) || '—'}</dd><dt>IEN</dt><dd>${ien ? lienP(ien) : '—'}</dd>
+      <dt>Directeur·rice</dt><dd>${dir ? lienP(dir) : '<span class="muted">non renseigné</span>'}</dd>
+      ${e.Latitude ? `<dt>Carte</dt><dd><a href="https://www.openstreetmap.org/?mlat=${e.Latitude}&mlon=${e.Longitude}#map=17/${e.Latitude}/${e.Longitude}" target="_blank" rel="noopener">OpenStreetMap ↗</a></dd>` : ''}
+    </dl>${e.Notes ? `<h3>Notes</h3><p style="white-space:pre-wrap">${esc(e.Notes)}</p>` : ''}</div>
+    <div><h3>Personnes rattachées (${esc(libA(S.annee))})</h3>
+      ${roles.length ? `<table class="t">${roles.map(r => `<tr><td>${lienP(r.Personne)}</td><td><span class="badge role">${esc(r.Role)}</span></td><td>${liste(r.Cycle).length ? 'C' + liste(r.Cycle).join('/') : ''}</td></tr>`).join('')}</table>` : '<p class="muted">Aucune.</p>'}
+      <h3>Stagiaires accueillis</h3>
+      ${suivis.length ? `<table class="t">${suivis.map(s => `<tr><td>${lienP(s.Etudiant)}</td><td>chez ${lienP(s.Encadrant)}</td><td>${esc(s.Type || '')} ${esc(s.Fenetre || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun.</p>'}
+    </div></div>`;
+}
+function ficheCirco(id) {
+  const c = CI(id); if (!c) return '<p class="muted">Circonscription introuvable.</p>';
+  const roles = D.Roles.filter(r => r.Annee === S.annee && r.Circonscription === id);
+  const parRole = {}; for (const r of roles) (parRole[r.Role] = parRole[r.Role] || []).push(r);
+  const ecoles = D.Ecoles.filter(e => e.Circonscription === id).sort((a, b) => String(a.Commune).localeCompare(String(b.Commune)));
+  const mails = roles.map(r => (P(r.Personne) || {}).Mail).filter(Boolean);
+  return `<div class="entete"><h2>🗺️ Circonscription ${esc(libC(id))}</h2><span class="badge">${esc(c.Code || '')}</span>${c.Secteur_DDA ? `<span class="badge">${esc(c.Secteur_DDA)}</span>` : ''}
+      <span class="spacer"></span>${mails.length ? `<button class="btn" data-copier="${esc([...new Set(mails)].join('; '))}">Copier les ${new Set(mails).size} mails</button>` : ''}</div>
+    <dl class="kv"><dt>IEN</dt><dd>${ienDe(id) ? lienP(ienDe(id)) : '<span class="ko">non renseigné</span>'}</dd><dt>Nom officiel</dt><dd>${esc(c.Nom || '')}</dd></dl>
+    <div class="deux-col"><div><h3>Personnes (${esc(libA(S.annee))})</h3>
+      ${Object.keys(parRole).length ? Object.entries(parRole).sort().map(([role, rs]) => `<p><b>${esc(role)}</b> (${rs.length}) : ${rs.map(r => lienP(r.Personne)).join(', ')}</p>`).join('') : '<p class="muted">Aucune.</p>'}
+      <h3>Prochains événements</h3>${tableEvts(evenementsPour({ circoId: id }))}</div>
+    <div><h3>Écoles (${ecoles.length})</h3><div class="scroll-table" style="max-height:420px"><table class="t">${ecoles.map(e => `<tr><td>${lien('e', e.id, e.Nom)}</td><td class="muted">${esc(e.Commune || '')}</td><td class="petit">${nomP(directeurDe(e.id)) ? esc(nomP(directeurDe(e.id))) : ''}</td></tr>`).join('')}</table></div></div></div>`;
+}
+/* --- Petits formulaires d'édition --- */
+function optionsEcoles(sel) { return '<option value="">—</option>' + [...D.Ecoles].sort((a, b) => String(a.Libelle).localeCompare(String(b.Libelle))).map(e => `<option value="${e.id}" ${e.id === sel ? 'selected' : ''}>${esc(e.Libelle || e.Nom)}</option>`).join(''); }
+function optionsCircos(sel) { return '<option value="">—</option>' + [...D.Circonscriptions].sort((a, b) => libC(a.id).localeCompare(libC(b.id))).map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(libC(c.id))}</option>`).join(''); }
+function optionsAnnees(sel) { return D.Annees.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.Annee)}</option>`).join(''); }
+function optionsPersonnes(sel, filtre = null) { return '<option value="">—</option>' + [...D.Personnes].filter(p => !filtre || filtre(p)).sort((a, b) => nomP(a.id).localeCompare(nomP(b.id))).map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(nomP(p.id))}</option>`).join(''); }
+const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+async function editerPersonne(id) {
+  const p = id ? P(id) : {};
+  const champs = [['Civilite', 'Civilité'], ['Nom', 'Nom'], ['Prenom', 'Prénom'], ['Mail_pro', 'Mail pro'], ['Mail_perso', 'Mail perso'], ['Telephone', 'Téléphone'], ['Num_etudiant', 'N° étudiant'], ['Fonction', 'Fonction']];
+  const html = `<div class="formulaire">${champs.map(([k, l]) => k === 'Civilite'
+      ? `<label>${l}</label><select id="f-${k}"><option></option>${['Mme', 'M.'].map(c => `<option ${p[k] === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`
+      : `<label>${l}</label><input type="text" id="f-${k}" value="${esc(p[k] || '')}">`).join('')}
+    <label>École d'exercice</label><select id="f-Ecole">${optionsEcoles(p.Ecole)}</select>
+    <label>Notes</label><textarea id="f-Notes" rows="3" style="font-family:inherit">${esc(p.Notes || '')}</textarea></div>`;
+  const ok = await modale(id ? 'Modifier la fiche' : 'Nouvelle personne', html, [{ label: 'Annuler', valeur: false }, { label: 'Enregistrer', primaire: true, valeur: () => true }]);
+  if (!ok) return;
+  const f = {}; for (const [k] of champs) f[k] = val('f-' + k); f.Ecole = +val('f-Ecole') || 0; f.Notes = val('f-Notes');
+  if (!f.Nom) { toast('Le nom est obligatoire'); return; }
+  if (id) await agir([['UpdateRecord', 'Personnes', id, f]], 'Fiche enregistrée');
+  else { const r = await agir([['AddRecord', 'Personnes', null, f]], 'Personne créée'); S.selection = { type: 'p', id: r.retValues[0] }; }
+  rendre();
+}
+async function ajouterRole(pid) {
+  const p = P(pid);
+  const html = `<div class="formulaire">
+    <label>Rôle</label><select id="r-Role">${ROLES.map(r => `<option>${r}</option>`).join('')}</select>
+    <label>Année</label><select id="r-Annee">${optionsAnnees(S.annee)}</select>
+    <label>École (si ≠ école d'exercice)</label><select id="r-Ecole">${optionsEcoles(null)}</select>
+    <label>Circonscription (IEN, CPC…)</label><select id="r-Circo">${optionsCircos(null)}</select>
+    <label>Cycle(s)</label><span>${['1', '2', '3'].map(c => `<label class="chk"><input type="checkbox" class="r-cyc" value="${c}"> ${c}</label>`).join(' ')}</span>
+    <label>Groupe</label><input type="text" id="r-Groupe" placeholder="T01, B05, Groupe A…">
+    <label>Modalité</label><input type="text" id="r-Modalite" placeholder="SOPA, contractuel, alternant…">
+    <label>Décharge</label><input type="text" id="r-Decharge" placeholder="lundi, 33 %…">
+    <label>Détail</label><input type="text" id="r-Detail"></div>`;
+  const ok = await modale(`Ajouter un rôle – ${nomP(pid)}`, html, [{ label: 'Annuler', valeur: false }, { label: 'Ajouter', primaire: true, valeur: () => ({
+    Role: val('r-Role'), Annee: +val('r-Annee'), Ecole: +val('r-Ecole') || 0, Circo_saisie: +val('r-Circo') || 0,
+    Cycle: ['L', ...[...document.querySelectorAll('.r-cyc:checked')].map(c => c.value)], Groupe: val('r-Groupe'),
+    Modalite: val('r-Modalite'), Decharge: val('r-Decharge'), Detail: val('r-Detail') }) }]);
+  if (!ok) return;
+  if (ok.Cycle.length === 1) ok.Cycle = null;
+  await agir([['AddRecord', 'Roles', null, { Personne: pid, ...ok }]], 'Rôle ajouté'); rendre();
+}
+async function ajouterSuivi(pid) {
+  const estEtu = rolesDe(pid).some(r => ROLES_ETUDIANTS.includes(r.Role));
+  const enc = p => rolesDe(p.id).some(r => ROLES_ENCADRANTS.includes(r.Role) || r.Role === 'Formateur');
+  const etu = p => rolesDe(p.id).some(r => ROLES_ETUDIANTS.includes(r.Role));
+  const html = `<div class="formulaire">
+    <label>Étudiant·e</label><select id="s-Etu">${optionsPersonnes(estEtu ? pid : null, etu)}</select>
+    <label>Encadrant·e</label><select id="s-Enc">${optionsPersonnes(estEtu ? null : pid, enc)}</select>
+    <label>Type</label><select id="s-Type">${TYPES_SUIVI.map(t => `<option>${t}</option>`).join('')}</select>
+    <label>Fenêtre / période</label><input type="text" id="s-Fen" placeholder="Massé 1, Filé S1…">
+    <label>Du / au</label><span><input type="date" id="s-Deb"> → <input type="date" id="s-Fin"></span>
+    <label>École (si ≠ encadrant)</label><select id="s-Ecole">${optionsEcoles(null)}</select>
+    <label>Groupe</label><input type="text" id="s-Grp"></div>`;
+  const ok = await modale('Ajouter un suivi', html, [{ label: 'Annuler', valeur: false }, { label: 'Ajouter', primaire: true, valeur: () => ({
+    Etudiant: +val('s-Etu') || 0, Encadrant: +val('s-Enc') || 0, Type: val('s-Type'), Fenetre: val('s-Fen'),
+    Debut: lireDate(val('s-Deb')), Fin: lireDate(val('s-Fin')), Ecole: +val('s-Ecole') || 0, Groupe: val('s-Grp'), Annee: S.annee, Statut: 'Prévu' }) }]);
+  if (!ok) return;
+  if (!ok.Etudiant || !ok.Encadrant) { toast('Étudiant et encadrant sont obligatoires'); return; }
+  await agir([['AddRecord', 'Suivis', null, ok]], 'Suivi ajouté'); rendre();
+}
+
+/* =====================================================================
+   8. CALENDRIER CONSOLIDÉ
+   ===================================================================== */
+function rendreCalendrier() {
+  if (!S.calFiltres) S.calFiltres = { cats: Object.keys(CATEGORIES), publics: [], circo: '', texte: '', actions: true, suivis: false };
+  const F = S.calFiltres;
+  $('#main').innerHTML = `<div class="barre">
+      <div class="chips" id="cal-cats">${Object.entries(CATEGORIES).map(([c, col]) => `<span class="chip ${F.cats.includes(c) ? 'on' : ''}" data-v="${esc(c)}" style="${F.cats.includes(c) ? `background:${col};border-color:${col}` : ''}">${esc(c)}</span>`).join('')}</div>
+    </div>
+    <div class="barre">
+      <select id="cal-public"><option value="">Tous publics</option>${ROLES.map(r => `<option ${F.publics[0] === r ? 'selected' : ''}>${r}</option>`).join('')}</select>
+      <select id="cal-circo">${optionsCircos(+F.circo || null).replace('<option value="">—</option>', '<option value="">Toutes circos</option>')}</select>
+      <input type="search" id="cal-txt" placeholder="Filtrer (titre, lieu, personne)…" value="${esc(F.texte)}">
+      <label class="chk"><input type="checkbox" id="cal-act" ${F.actions ? 'checked' : ''}> échéances d'actions</label>
+      <label class="chk"><input type="checkbox" id="cal-sui" ${F.suivis ? 'checked' : ''}> périodes de stage (suivis)</label>
+      <span class="spacer"></span>
+      <button class="btn" id="cal-ics">Exporter .ics</button>
+      <button class="btn primaire" id="cal-new">+ Événement</button>
+    </div>
+    <div id="calendrier"></div>`;
+  document.querySelectorAll('#cal-cats .chip').forEach(c => c.onclick = () => { const v = c.dataset.v; F.cats = F.cats.includes(v) ? F.cats.filter(x => x !== v) : [...F.cats, v]; rendreCalendrier(); });
+  $('#cal-public').onchange = e => { F.publics = e.target.value ? [e.target.value] : []; majCal(); };
+  $('#cal-circo').onchange = e => { F.circo = e.target.value; majCal(); };
+  $('#cal-txt').oninput = e => { F.texte = e.target.value; majCal(); };
+  $('#cal-act').onchange = e => { F.actions = e.target.checked; majCal(); };
+  $('#cal-sui').onchange = e => { F.suivis = e.target.checked; majCal(); };
+  $('#cal-ics').onclick = exporterIcs;
+  $('#cal-new').onclick = () => editerEvenement(null);
+  if (typeof FullCalendar === 'undefined') { $('#calendrier').innerHTML = '<p class="ko">La bibliothèque FullCalendar n\'a pas pu être chargée (connexion ?).</p>'; return; }
+  const vue = S.cal ? S.cal.view.type : 'dayGridMonth'; const date = S.cal ? S.cal.getDate() : new Date();
+  S.cal = new FullCalendar.Calendar($('#calendrier'), {
+    locale: 'fr', initialView: vue, initialDate: date, height: 'auto', firstDay: 1, weekends: true, nowIndicator: true,
+    headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,listMonth,listYear' },
+    buttonText: { listMonth: 'liste mois', listYear: 'liste année' },
+    events: (info, ok) => ok(evenementsCalendrier()),
+    eventClick: info => detailEvenement(info.event.extendedProps),
+    dateClick: info => editerEvenement(null, info.dateStr),
+  });
+  S.cal.render();
+}
+function majCal() { if (S.cal) S.cal.refetchEvents(); }
+function evenementsFiltres() {
+  const F = S.calFiltres; const mots = norm(F.texte).split(' ').filter(Boolean);
+  return D.Evenements.filter(e => e.Date_debut && F.cats.includes(e.Categorie || 'Autre')
+    && (!F.publics.length || liste(e.Publics).some(x => x === 'Tous' || F.publics.includes(x)))
+    && (!F.circo || !e.Circonscription || e.Circonscription === +F.circo)
+    && (!mots.length || mots.every(m => norm([e.Titre, e.Lieu, e.Description, liste(e.Participants).map(nomP).join(' ')].join(' ')).includes(m))));
+}
+function evenementsCalendrier() {
+  const F = S.calFiltres; const out = [];
+  for (const e of evenementsFiltres()) {
+    const allDay = !lireHeure(e.Heure_debut); const fin = e.Date_fin && e.Date_fin >= e.Date_debut ? e.Date_fin : e.Date_debut;
+    const col = CATEGORIES[e.Categorie] || '#555';
+    out.push({ title: e.Titre || '(sans titre)', allDay, backgroundColor: col, borderColor: col,
+      start: allDay ? isoDate(e.Date_debut) : `${isoDate(e.Date_debut)}T${lireHeure(e.Heure_debut)}`,
+      end: allDay ? isoDate(fin + JOUR) : (lireHeure(e.Heure_fin) ? `${isoDate(fin)}T${lireHeure(e.Heure_fin)}` : undefined),
+      classNames: e.Statut === 'Annulé' ? ['annule'] : [], extendedProps: { kind: 'evt', id: e.id } });
+  }
+  if (F.actions) for (const a of D.Actions) if (a.Echeance && !['Fait', 'Abandonné'].includes(a.Statut) && (!F.texte || norm(a.Titre).includes(norm(F.texte))))
+    out.push({ title: '☐ ' + a.Titre, allDay: true, start: isoDate(a.Echeance), backgroundColor: '#fff', borderColor: '#c9191e', textColor: '#c9191e', extendedProps: { kind: 'action', id: a.id } });
+  if (F.suivis) for (const s of D.Suivis) if (s.Debut && s.Annee === S.annee) {
+    const t = `${s.Type || 'Stage'} · ${nomP(s.Etudiant)} chez ${nomP(s.Encadrant)}`;
+    if (F.texte && !norm(t).includes(norm(F.texte))) continue;
+    out.push({ title: t, allDay: true, start: isoDate(s.Debut), end: isoDate((s.Fin || s.Debut) + JOUR), backgroundColor: '#d6e9f8', borderColor: '#1f78b4', textColor: '#103a5c', extendedProps: { kind: 'suivi', id: s.id } });
+  }
+  return out;
+}
+function detailEvenement({ kind, id }) {
+  if (kind === 'action') { const a = IDX.Actions.get(id); modale(a.Titre, `<dl class="kv"><dt>Échéance</dt><dd>${fDate(a.Echeance)}</dd><dt>Projet</dt><dd>${esc(a.Projet || '')}</dd><dt>Contexte</dt><dd>${esc(a.Contexte || '')}</dd><dt>Statut</dt><dd>${esc(a.Statut || '')}</dd><dt>Notes</dt><dd>${esc(a.Notes || '')}</dd></dl>`); return; }
+  if (kind === 'suivi') { const s = IDX.Suivis.get(id); modale(`${s.Type || 'Suivi'} – ${s.Fenetre || ''}`, `<dl class="kv"><dt>Étudiant·e</dt><dd>${lienP(s.Etudiant)}</dd><dt>Encadrant·e</dt><dd>${lienP(s.Encadrant)}</dd><dt>Dates</dt><dd>${fDate(s.Debut)} → ${fDate(s.Fin)}</dd><dt>École</dt><dd>${lienE(s.Ecole || (P(s.Encadrant) || {}).Ecole)}</dd></dl>`); return; }
+  const e = IDX.Evenements.get(id);
+  modale(e.Titre || 'Événement', `<dl class="kv">
+    <dt>Catégorie</dt><dd>${badgeCat(e.Categorie)}</dd>
+    <dt>Date</dt><dd>${fDate(e.Date_debut)}${e.Date_fin && e.Date_fin !== e.Date_debut ? ' → ' + fDate(e.Date_fin) : ''} ${esc([e.Heure_debut, e.Heure_fin].filter(Boolean).join(' – '))}</dd>
+    <dt>Lieu</dt><dd>${esc(e.Lieu || '—')}</dd>
+    <dt>Publics</dt><dd>${liste(e.Publics).map(x => `<span class="badge">${esc(x)}</span>`).join('') || '—'}</dd>
+    <dt>Participants</dt><dd>${liste(e.Participants).map(lienP).join(', ') || '—'}</dd>
+    <dt>Circonscription</dt><dd>${lienC(e.Circonscription) || '—'}</dd>
+    <dt>Statut</dt><dd>${esc(e.Statut || '')}</dd>
+    <dt>Description</dt><dd style="white-space:pre-wrap">${esc(e.Description || '')}</dd></dl>`,
+    [{ label: 'Fermer', valeur: null }, { label: 'Modifier', primaire: true, valeur: 'edit' }]).then(v => { if (v === 'edit') editerEvenement(id); });
+}
+async function editerEvenement(id, dateStr) {
+  const e = id ? IDX.Evenements.get(id) : { Date_debut: dateStr ? lireDate(dateStr) : aujourdhui(), Categorie: 'Réunion', Statut: 'Prévu' };
+  const html = `<div class="formulaire">
+    <label>Titre</label><input type="text" id="e-Titre" value="${esc(e.Titre || '')}">
+    <label>Catégorie</label><select id="e-Cat">${Object.keys(CATEGORIES).map(c => `<option ${c === e.Categorie ? 'selected' : ''}>${c}</option>`).join('')}</select>
+    <label>Du / au</label><span><input type="date" id="e-Deb" value="${e.Date_debut ? isoDate(e.Date_debut) : ''}"> → <input type="date" id="e-Fin" value="${e.Date_fin ? isoDate(e.Date_fin) : ''}"></span>
+    <label>Heures</label><span><input type="text" id="e-H1" size="6" value="${esc(e.Heure_debut || '')}" placeholder="9h30"> – <input type="text" id="e-H2" size="6" value="${esc(e.Heure_fin || '')}" placeholder="12h"></span>
+    <label>Lieu</label><input type="text" id="e-Lieu" value="${esc(e.Lieu || '')}">
+    <label>Publics</label><span>${['Tous', ...ROLES].map(r => `<label class="chk" style="margin-right:6px"><input type="checkbox" class="e-pub" value="${r}" ${liste(e.Publics).includes(r) ? 'checked' : ''}>${r}</label>`).join('')}</span>
+    <label>Circonscription</label><select id="e-Circo">${optionsCircos(e.Circonscription)}</select>
+    <label>Statut</label><select id="e-Statut">${['Prévu', 'Confirmé', 'Fait', 'Annulé'].map(s => `<option ${s === e.Statut ? 'selected' : ''}>${s}</option>`).join('')}</select>
+    <label>Description</label><textarea id="e-Desc" rows="3" style="font-family:inherit">${esc(e.Description || '')}</textarea></div>`;
+  const ok = await modale(id ? 'Modifier l\'événement' : 'Nouvel événement', html, [{ label: 'Annuler', valeur: false }, { label: 'Enregistrer', primaire: true, valeur: () => ({
+    Titre: val('e-Titre'), Categorie: val('e-Cat'), Date_debut: lireDate(val('e-Deb')), Date_fin: lireDate(val('e-Fin')),
+    Heure_debut: val('e-H1'), Heure_fin: val('e-H2'), Lieu: val('e-Lieu'), Circonscription: +val('e-Circo') || 0, Statut: val('e-Statut'),
+    Publics: ['L', ...[...document.querySelectorAll('.e-pub:checked')].map(c => c.value)], Description: val('e-Desc') }) }]);
+  if (!ok) return;
+  if (!ok.Titre || !ok.Date_debut) { toast('Titre et date de début obligatoires'); return; }
+  if (ok.Publics.length === 1) ok.Publics = null;
+  if (id) await agir([['UpdateRecord', 'Evenements', id, ok]], 'Événement enregistré');
+  else await agir([['AddRecord', 'Evenements', null, { ...ok, Annee: S.annee }]], 'Événement créé');
+  majCal();
+}
+function exporterIcs() {
+  const echap = s => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+  const compact = s => s.replace(/[-:]/g, '');
+  const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  const lignes = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//CPD ADASEN//Centre de controle//FR', 'CALSCALE:GREGORIAN'];
+  for (const e of evenementsFiltres()) {
+    const h1 = lireHeure(e.Heure_debut), h2 = lireHeure(e.Heure_fin); const fin = e.Date_fin && e.Date_fin >= e.Date_debut ? e.Date_fin : e.Date_debut;
+    lignes.push('BEGIN:VEVENT', `UID:cpd-evt-${e.id}@centre-controle`, `DTSTAMP:${now}`);
+    if (h1) { lignes.push(`DTSTART:${compact(isoDate(e.Date_debut))}T${h1.replace(':', '')}00`); lignes.push(`DTEND:${compact(isoDate(fin))}T${(h2 || h1).replace(':', '')}00`); }
+    else { lignes.push(`DTSTART;VALUE=DATE:${compact(isoDate(e.Date_debut))}`, `DTEND;VALUE=DATE:${compact(isoDate(fin + JOUR))}`); }
+    lignes.push(`SUMMARY:${echap(e.Titre)}`, `CATEGORIES:${echap(e.Categorie)}`);
+    if (e.Lieu) lignes.push(`LOCATION:${echap(e.Lieu)}`);
+    if (e.Description) lignes.push(`DESCRIPTION:${echap(e.Description)}`);
+    lignes.push('END:VEVENT');
+  }
+  lignes.push('END:VCALENDAR');
+  telecharger('calendrier-cpd.ics', lignes.join('\r\n'), 'text/calendar;charset=utf-8');
+}
+
+/* =====================================================================
+   9. LISTES DE DIFFUSION, PUBLIPOSTAGE, DOCUMENTS
+   ===================================================================== */
+function etatListesDefaut() { return { roles: [], circos: [], cycle: '', groupe: '', avecMail: true, unique: true, coches: null, modele: '', modeleMail: '', pdfNextcloud: true, pdfMail: false }; }
+function lignesListe() {
+  const L = S.listes; const mots = norm(L.groupe).split(' ').filter(Boolean);
+  let rows = D.Roles.filter(r => r.Annee === S.annee && P(r.Personne)
+    && (!L.roles.length || L.roles.includes(r.Role))
+    && (!L.circos.length || L.circos.includes(r.Circonscription) || L.circos.includes(circoDe(P(r.Personne))))
+    && (!L.cycle || liste(r.Cycle).includes(L.cycle))
+    && (!mots.length || mots.every(m => norm(r.Groupe).includes(m))));
+  if (L.avecMail) rows = rows.filter(r => P(r.Personne).Mail);
+  if (L.unique) { const vu = new Set(); rows = rows.filter(r => !vu.has(r.Personne) && vu.add(r.Personne)); }
+  return rows.sort((a, b) => nomP(a.Personne).localeCompare(nomP(b.Personne)));
+}
+function rendreListes() {
+  if (!S.listes) S.listes = etatListesDefaut();
+  const L = S.listes; const rows = lignesListe();
+  if (!L.coches || L._sig !== rows.map(r => r.id).join(',')) { L.coches = new Set(rows.map(r => r.id)); L._sig = rows.map(r => r.id).join(','); }
+  const choisis = rows.filter(r => L.coches.has(r.id));
+  const modelesMail = D.Modeles.filter(m => m.Type !== 'Document'), modelesDoc = D.Modeles.filter(m => m.Type === 'Document');
+  $('#main').innerHTML = `
+    <div class="barre"><b>Rôles :</b><div class="chips" id="l-roles">${ROLES.map(r => `<span class="chip ${L.roles.includes(r) ? 'on' : ''}" data-v="${r}">${r}</span>`).join('')}</div></div>
+    <div class="barre">
+      <select id="l-circo"><option value="">${L.circos.length ? '+ ajouter une circo' : 'Toutes circonscriptions'}</option>${D.Circonscriptions.filter(c => !L.circos.includes(c.id)).sort((a, b) => libC(a.id).localeCompare(libC(b.id))).map(c => `<option value="${c.id}">${esc(libC(c.id))}</option>`).join('')}</select>
+      ${L.circos.map(id => `<span class="chip on" data-retirer-circo="${id}">${esc(libC(id))} ✕</span>`).join('')}
+      <select id="l-cycle"><option value="">Tous cycles</option>${['1', '2', '3'].map(c => `<option ${L.cycle === c ? 'selected' : ''} value="${c}">Cycle ${c}</option>`).join('')}</select>
+      <input type="search" id="l-groupe" placeholder="Groupe (T01, B…)" value="${esc(L.groupe)}" size="12">
+      <label class="chk"><input type="checkbox" id="l-mail" ${L.avecMail ? 'checked' : ''}> avec mail</label>
+      <label class="chk"><input type="checkbox" id="l-unique" ${L.unique ? 'checked' : ''}> une ligne par personne</label>
+    </div>
+    <div class="deux-col">
+      <div>
+        <div class="barre"><b>${choisis.length}</b> / ${rows.length} sélectionné·e·s
+          <span class="spacer"></span>
+          <button class="btn" id="l-copier">Copier les mails</button>
+          <button class="btn" id="l-csv">Export CSV</button></div>
+        <div class="scroll-table"><table class="t"><tr><th><input type="checkbox" id="l-tout" ${choisis.length === rows.length && rows.length ? 'checked' : ''}></th><th>Nom</th><th>Rôle</th><th>Groupe</th><th>École / circo</th><th>Mail</th></tr>
+          ${rows.map(r => { const p = P(r.Personne); return `<tr><td><input type="checkbox" class="l-c" data-id="${r.id}" ${L.coches.has(r.id) ? 'checked' : ''}></td><td>${lienP(p.id)}</td><td>${esc(r.Role)}${liste(r.Cycle).length ? ` <span class="muted">C${liste(r.Cycle).join('/')}</span>` : ''}</td><td>${esc(r.Groupe || '')}</td><td class="petit">${esc(libE(r.Ecole || p.Ecole))}<br><span class="muted">${esc(libC(r.Circonscription || circoDe(p)))}</span></td><td class="petit">${esc(p.Mail || '')}</td></tr>`; }).join('')}
+        </table></div>
+      </div>
+      <div>
+        <h3>Publipostage mail</h3>
+        <div class="barre"><select id="l-modele"><option value="">— modèle de mail —</option>${modelesMail.map(m => `<option value="${m.id}" ${+L.modele === m.id ? 'selected' : ''}>${esc(m.Nom)}</option>`).join('')}</select>
+          <button class="btn" id="l-test" ${L.modele ? '' : 'disabled'}>Envoyer un test à moi</button>
+          <button class="btn primaire" id="l-envoyer" ${L.modele && choisis.length ? '' : 'disabled'}>Envoyer (${choisis.length})</button></div>
+        <h3>Documents (PDF)</h3>
+        <div class="barre"><select id="l-doc"><option value="">— modèle de document —</option>${modelesDoc.map(m => `<option value="${m.id}" ${+L.modeleDoc === m.id ? 'selected' : ''}>${esc(m.Nom)}</option>`).join('')}</select>
+          <button class="btn" id="l-imprimer" ${L.modeleDoc && choisis.length ? '' : 'disabled'}>Imprimer / PDF navigateur</button>
+          <button class="btn" id="l-pdf" ${L.modeleDoc && choisis.length ? '' : 'disabled'}>Générer via n8n</button></div>
+        <div class="barre petit"><label class="chk"><input type="checkbox" id="l-pdf-nc" ${L.pdfNextcloud ? 'checked' : ''}> déposer dans Nextcloud</label>
+          <label class="chk"><input type="checkbox" id="l-pdf-mail" ${L.pdfMail ? 'checked' : ''}> envoyer en pièce jointe (avec le modèle de mail ci-dessus)</label></div>
+        <h3>Aperçu ${choisis.length ? '(1er destinataire)' : ''}</h3>
+        <div id="l-apercu" class="apercu"><span class="muted">Choisissez un modèle.</span></div>
+        <p class="petit muted">Champs disponibles : ${CHAMPS_FUSION.map(c => `<code>{{${c}}}</code>`).join(' ')}</p>
+      </div>
+    </div>`;
+  document.querySelectorAll('#l-roles .chip').forEach(c => c.onclick = () => { const v = c.dataset.v; L.roles = L.roles.includes(v) ? L.roles.filter(x => x !== v) : [...L.roles, v]; rendreListes(); });
+  $('#l-circo').onchange = e => { if (e.target.value) L.circos.push(+e.target.value); rendreListes(); };
+  document.querySelectorAll('[data-retirer-circo]').forEach(c => c.onclick = () => { L.circos = L.circos.filter(x => x !== +c.dataset.retirerCirco); rendreListes(); });
+  $('#l-cycle').onchange = e => { L.cycle = e.target.value; rendreListes(); };
+  $('#l-groupe').onchange = e => { L.groupe = e.target.value; rendreListes(); };
+  $('#l-mail').onchange = e => { L.avecMail = e.target.checked; rendreListes(); };
+  $('#l-unique').onchange = e => { L.unique = e.target.checked; rendreListes(); };
+  $('#l-tout').onchange = e => { L.coches = new Set(e.target.checked ? rows.map(r => r.id) : []); rendreListes(); };
+  document.querySelectorAll('.l-c').forEach(c => c.onchange = () => { c.checked ? L.coches.add(+c.dataset.id) : L.coches.delete(+c.dataset.id); rendreListes(); });
+  $('#l-modele').onchange = e => { L.modele = e.target.value; rendreListes(); };
+  $('#l-doc').onchange = e => { L.modeleDoc = e.target.value; rendreListes(); };
+  $('#l-pdf-nc').onchange = e => { L.pdfNextcloud = e.target.checked; };
+  $('#l-pdf-mail').onchange = e => { L.pdfMail = e.target.checked; };
+  $('#l-copier').onclick = () => copier([...new Set(choisis.map(r => P(r.Personne).Mail).filter(Boolean))].join('; '));
+  $('#l-csv').onclick = () => exporterCsv(choisis);
+  $('#l-test').onclick = () => envoyerMails(choisis.slice(0, 1), true);
+  $('#l-envoyer').onclick = () => envoyerMails(choisis, false);
+  $('#l-imprimer').onclick = () => imprimer(choisis);
+  $('#l-pdf').onclick = () => genererPdf(choisis);
+  const mId = +(L.modele || L.modeleDoc);
+  if (mId && choisis.length) {
+    const m = IDX.Modeles.get(mId); const ctx = contexteFusion(choisis[0]);
+    $('#l-apercu').innerHTML = `<div class="objet">${surligner(fusion(m.Objet, ctx, false))}</div>${surligner(fusion(corpsHtml(m.Corps), ctx, true))}`;
+  }
+}
+const CHAMPS_FUSION = ['Civilite', 'Madame_Monsieur', 'Nom', 'Prenom', 'Nom_complet', 'Mail', 'Telephone', 'Role', 'Annee', 'Groupe', 'Cycle', 'Modalite', 'Decharge', 'Detail',
+  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Date_du_jour', 'Signature'];
+function contexteFusion(r) {
+  const p = P(r.Personne); const ecoleId = r.Ecole || p.Ecole; const e = E(ecoleId) || {};
+  const circo = r.Circonscription || circoDe(p); const ien = ienDe(circo);
+  const suivisEtu = (IDX.suivisEtudiant.get(p.id) || []).filter(s => s.Annee === r.Annee && s.Statut !== 'Annulé');
+  const suivisEnc = (IDX.suivisEncadrant.get(p.id) || []).filter(s => s.Annee === r.Annee && s.Statut !== 'Annulé');
+  const descSuivi = (s, autre) => { const ec = E(s.Ecole || (P(s.Encadrant) || {}).Ecole); return `${nomP(autre)} – ${[s.Type, s.Fenetre].filter(Boolean).join(' ')}${ec ? ' – ' + (ec.Libelle || ec.Nom) : ''}${s.Debut ? ` (du ${fDate(s.Debut)} au ${fDate(s.Fin)})` : ''}`; };
+  return {
+    Civilite: p.Civilite || '', Madame_Monsieur: p.Civilite === 'Mme' ? 'Madame' : p.Civilite === 'M.' ? 'Monsieur' : 'Madame, Monsieur',
+    Nom: (p.Nom || '').toUpperCase(), Prenom: p.Prenom || '', Nom_complet: nomP(p.id), Mail: p.Mail || '', Telephone: p.Telephone || '',
+    Role: r.Role || '', Annee: libA(r.Annee), Groupe: r.Groupe || '', Cycle: liste(r.Cycle).join(', '), Modalite: r.Modalite || '', Decharge: r.Decharge || '', Detail: r.Detail || '',
+    Ecole: e.Nom || '', Ecole_commune: e.Commune || '', Ecole_UAI: e.UAI || '', Ecole_mail: e.Mail || '',
+    Circonscription: libC(circo), IEN: nomP(ien), IEN_mail: (P(ien) || {}).Mail || '', Directeur: nomP(directeurDe(ecoleId)),
+    Encadrants: suivisEtu.map(s => descSuivi(s, s.Encadrant)).join('\n'), Etudiants: suivisEnc.map(s => descSuivi(s, s.Etudiant)).join('\n'),
+    Date_du_jour: dateLongue(), Signature: param('SIGNATURE'),
+  };
+}
+const corpsHtml = c => { const s = String(c || ''); return /<[a-z][\s\S]*>/i.test(s) ? s : esc(s).replace(/\n/g, '<br>'); };
+function fusion(gabarit, ctx, html) {
+  return String(gabarit || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (m, k) => k in ctx ? (html ? esc(ctx[k]).replace(/\n/g, '<br>') : ctx[k].replace(/\n/g, ', ')) : m);
+}
+const surligner = html => html.replace(/\{\{\s*\w+\s*\}\}/g, m => `<span class="inconnu" title="Champ inconnu">${m}</span>`);
+function exporterCsv(rows) {
+  const cols = ['Civilite', 'Nom', 'Prenom', 'Mail', 'Telephone', 'Role', 'Groupe', 'Cycle', 'Ecole', 'Ecole_commune', 'Circonscription', 'IEN'];
+  const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lignes = [cols.join(';'), ...rows.map(r => { const c = contexteFusion(r); return cols.map(k => q(c[k])).join(';'); })];
+  telecharger(`liste-${new Date().toISOString().slice(0, 10)}.csv`, '\ufeff' + lignes.join('\r\n'), 'text/csv;charset=utf-8');
+}
+function verifierN8n(cleUrl) {
+  const url = param(cleUrl), jeton = param('N8N_JETON');
+  if (!url || !jeton) { modale('n8n non configuré', `<p>Renseignez <code>${cleUrl}</code> et <code>N8N_JETON</code> dans l'onglet <b>Réglages</b> (voir le guide d'installation n8n).</p>`); return null; }
+  return { url, jeton };
+}
+async function posterN8n(url, corps) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corps) });
+  if (!r.ok) throw new Error(`n8n a répondu ${r.status} ${r.statusText}`);
+}
+async function envoyerMails(rows, test) {
+  const cfg = verifierN8n('N8N_URL_PUBLIPOSTAGE'); if (!cfg) return;
+  const m = IDX.Modeles.get(+S.listes.modele); const moi = param('MAIL_CPD');
+  if (test && !moi) { modale('Adresse manquante', '<p>Renseignez <code>MAIL_CPD</code> dans Réglages.</p>'); return; }
+  if (!test) {
+    const ok = await modale('Confirmer l\'envoi', `<p>Envoyer <b>${rows.length} mail(s)</b> avec le modèle « ${esc(m.Nom)} » ?</p><p class="muted petit">Chaque envoi est tracé dans la table Envois (statut mis à jour par n8n). Conseil : faites d'abord un envoi test.</p>`,
+      [{ label: 'Annuler', valeur: false }, { label: `Envoyer ${rows.length} mail(s)`, primaire: true, valeur: true }]);
+    if (!ok) return;
+  }
+  const lot = (test ? 'TEST-' : 'L') + new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+  const msgs = rows.map(r => { const ctx = contexteFusion(r); return { personne: r.Personne, to: test ? moi : P(r.Personne).Mail,
+    subject: (test ? '[TEST] ' : '') + fusion(m.Objet, ctx, false), html: fusion(corpsHtml(m.Corps), ctx, true) }; });
+  const now = Date.now() / 1000;
+  const res = await grist.docApi.applyUserActions([['BulkAddRecord', 'Envois', msgs.map(() => null), {
+    Date: msgs.map(() => now), Lot: msgs.map(() => lot), Type: msgs.map(() => 'Mail'), Modele: msgs.map(() => m.id), Personne: msgs.map(x => x.personne),
+    Destinataire: msgs.map(x => x.to), Objet: msgs.map(x => x.subject), Statut: msgs.map(() => test ? 'Test' : 'En file') }]]);
+  const ids = res.retValues[0];
+  try {
+    await posterN8n(cfg.url, { jeton: cfg.jeton, lot, replyTo: moi, messages: msgs.map((x, i) => ({ envoiId: ids[i], to: x.to, subject: x.subject, html: x.html })) });
+    toast(test ? `Test envoyé à ${moi}` : `${msgs.length} mail(s) transmis à n8n (lot ${lot})`, 4000);
+  } catch (e) {
+    await grist.docApi.applyUserActions([['BulkUpdateRecord', 'Envois', ids, { Statut: ids.map(() => 'Erreur'), Message: ids.map(() => String(e.message || e)) }]]);
+    modale('Échec de l\'envoi', `<p class="ko">${esc(e.message || e)}</p><p class="muted">Vérifiez que le workflow n8n est actif et que l'URL est celle de « Production ».</p>`);
+  }
+  await charger(); rendre();
+}
+function documentsHtml(rows) {
+  const m = IDX.Modeles.get(+S.listes.modeleDoc);
+  return rows.map(r => { const ctx = contexteFusion(r); return { r, ctx, titre: fusion(m.Objet || m.Nom, ctx, false), html: fusion(corpsHtml(m.Corps), ctx, true) }; });
+}
+const PAGE_CSS = 'body{font-family:Marianne,Arial,sans-serif;font-size:12pt;line-height:1.5;margin:2cm;color:#111}h1,h2{color:#000091}';
+async function imprimer(rows) {
+  const docs = documentsHtml(rows);
+  const corps = docs.map(d => `<div class="page">${d.html}</div>`).join('');
+  const page = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Documents</title><style>${PAGE_CSS}.page{page-break-after:always}</style></head><body>${corps}</body></html>`;
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(page); w.document.close(); setTimeout(() => w.print(), 400); return; }
+  const choix = await modale('Impression', '<p>Le navigateur bloque l\'ouverture d\'une fenêtre depuis le widget.</p>', [{ label: 'Annuler', valeur: null }, { label: 'Télécharger le HTML', valeur: 'dl' }, { label: 'Imprimer ici', primaire: true, valeur: 'print' }]);
+  if (choix === 'dl') telecharger('documents.html', page, 'text/html;charset=utf-8');
+  if (choix === 'print') { $('#print-area').innerHTML = corps; window.print(); }
+}
+async function genererPdf(rows) {
+  const cfg = verifierN8n('N8N_URL_DOCUMENTS'); if (!cfg) return;
+  const L = S.listes; const mMail = L.pdfMail ? IDX.Modeles.get(+L.modele) : null;
+  if (L.pdfMail && !mMail) { modale('Modèle de mail manquant', '<p>Pour joindre les PDF par mail, choisissez aussi un modèle dans « Publipostage mail ».</p>'); return; }
+  if (!L.pdfNextcloud && !L.pdfMail) { toast('Cochez au moins une destination'); return; }
+  const ok = await modale('Générer les documents', `<p>Générer <b>${rows.length} PDF</b>${L.pdfNextcloud ? ` dans <code>${esc(param('DOSSIER_PDF'))}</code>` : ''}${L.pdfMail ? ' et les envoyer par mail' : ''} ?</p>`, [{ label: 'Annuler', valeur: false }, { label: 'Générer', primaire: true, valeur: true }]);
+  if (!ok) return;
+  const docs = documentsHtml(rows); const lot = 'D' + new Date().toISOString().replace(/\D/g, '').slice(0, 14); const now = Date.now() / 1000;
+  const fichier = d => (d.titre.includes(d.ctx.Nom_complet) ? d.titre : `${d.titre} - ${d.ctx.Nom_complet}`).replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120);
+  const res = await grist.docApi.applyUserActions([['BulkAddRecord', 'Envois', docs.map(() => null), {
+    Date: docs.map(() => now), Lot: docs.map(() => lot), Type: docs.map(() => 'Document'), Modele: docs.map(() => +L.modeleDoc), Personne: docs.map(d => d.r.Personne),
+    Destinataire: docs.map(d => L.pdfMail ? d.ctx.Mail : param('DOSSIER_PDF')), Objet: docs.map(d => fichier(d)), Statut: docs.map(() => 'En file') }]]);
+  const ids = res.retValues[0];
+  try {
+    await posterN8n(cfg.url, { jeton: cfg.jeton, lot, dossier: param('DOSSIER_PDF'), enregistrer: L.pdfNextcloud, envoyerMail: L.pdfMail, replyTo: param('MAIL_CPD'),
+      documents: docs.map((d, i) => ({ envoiId: ids[i], nomFichier: fichier(d), html: `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>${PAGE_CSS}</style></head><body>${d.html}</body></html>`,
+        to: d.ctx.Mail, subject: mMail ? fusion(mMail.Objet, d.ctx, false) : '', corpsMail: mMail ? fusion(corpsHtml(mMail.Corps), d.ctx, true) : '' })) });
+    toast(`${docs.length} document(s) transmis à n8n`, 4000);
+  } catch (e) {
+    await grist.docApi.applyUserActions([['BulkUpdateRecord', 'Envois', ids, { Statut: ids.map(() => 'Erreur'), Message: ids.map(() => String(e.message || e)) }]]);
+    modale('Échec', `<p class="ko">${esc(e.message || e)}</p>`);
+  }
+  await charger(); rendre();
+}
+
+/* =====================================================================
+   10. IMPORT (copier-coller depuis Excel / CSV)
+   ===================================================================== */
+const CIBLES = {
+  personnes: { label: 'Personnes et rôles', champs: {
+    Civilite: ['civilite', 'civ', 'genre'], Nom: ['nom', 'nom d usage', 'nom de famille', 'nom usage', 'nom patronymique'], Prenom: ['prenom'],
+    Nom_complet: ['nom complet', 'nom prenom', 'prenom nom', 'identite', 'etudiant', 'stagiaire', 'pemf', 'name'],
+    Mail_pro: ['mail', 'email', 'e mail', 'courriel', 'mail pro', 'mail academique', 'adresse mail', 'adresse mail academique', 'adresse mail universitaire', 'mail universitaire', 'adresse electronique'],
+    Mail_perso: ['mail perso', 'adresse mail perso', 'email perso', 'mail personnel'], Telephone: ['tel', 'telephone', 'portable', 'mobile', 'tel portable'],
+    Num_etudiant: ['n etu', 'numero etudiant', 'num etudiant', 'n etudiant', 'no etudiant'], Fonction: ['fonction', 'poste', 'corps'],
+    UAI: ['uai', 'rne', 'code uai', 'uai ecole'], Ecole_nom: ['ecole', 'etablissement', 'ecole d exercice', 'ecole de rattachement', 'ecole d affectation', 'affectation'],
+    Circo: ['circonscription', 'circo', 'circonscription d affectation'], Role: ['role', 'niveau', 'profil', 'categorie'],
+    Groupe: ['groupe', 'trinome', 'binome', 'code groupe', 'groupe td'], Cycle: ['cycle', 'cycles'],
+    Modalite: ['modalite', 'modalites de stage', 'statut', 'modalite de stage'], Decharge: ['decharge', 'jour de decharge', 'jours de decharge', 'jour s de decharge'],
+    Detail: ['detail', 'divers', 'remarque', 'remarques', 'commentaire', 'notes', 'observations'] } },
+  suivis: { label: 'Suivis / groupes de stage (encadrant + étudiants)', champs: {
+    Encadrant_nom: ['encadrant nom', 'nom encadrant', 'nom mat', 'nom pemf', 'tuteur nom'], Encadrant_prenom: ['encadrant prenom', 'prenom encadrant', 'prenom mat', 'prenom pemf', 'tuteur prenom'],
+    Encadrant: ['encadrant', 'tuteur', 'mat', 'pemf', 'maitre d accueil'], Etudiant: ['etudiant', 'stagiaire', 'etudiant 1', 'etudiant 2', 'etudiant 3', 'etudiant 4'],
+    Type: ['type', 'type de stage'], Fenetre: ['fenetre', 'periode', 'stage'], Groupe: ['code groupe', 'groupe', 'trinome', 'binome'],
+    Debut: ['debut', 'date debut', 'du'], Fin: ['fin', 'date fin', 'au'], UAI: ['uai', 'rne'], Ecole_nom: ['ecole', 'etablissement'], Circo: ['circonscription', 'circo'], Cycle: ['cycle'] } },
+  evenements: { label: 'Événements / calendrier', champs: {
+    Titre: ['titre', 'intitule', 'objet', 'evenement', 'type conseil', 'libelle', 'action'], Categorie: ['categorie', 'type'],
+    Date_debut: ['date', 'date debut', 'debut', 'du', 'jour', 'date de debut'], Date_fin: ['date fin', 'fin', 'au', 'date de fin'],
+    Heure_debut: ['heure debut', 'heure de debut', 'debut heure'], Heure_fin: ['heure fin', 'heure de fin'], Horaire: ['horaire', 'horaires', 'heure', 'creneau'],
+    Lieu: ['lieu', 'salle', 'adresse'], Publics: ['public', 'publics', 'sous groupe', 'formation', 'cible'], Description: ['description', 'commentaire', 'remarque', 'remarques', 'details'],
+    Statut: ['statut'] } },
+};
+function detecterChamp(cible, entete) {
+  const n = norm(entete).replace(/[.@]/g, ' ').replace(/\s+/g, ' ').trim();
+  const champs = CIBLES[cible].champs;
+  for (const [f, syn] of Object.entries(champs)) if (syn.includes(n) || norm(f).replace(/_/g, ' ') === n) return f;
+  if (cible === 'suivis' && /^etudiant/.test(n)) return 'Etudiant';
+  if (cible === 'suivis' && /^encadrant/.test(n) && !/nom|prenom/.test(n)) return 'Encadrant';
+  return '';
+}
+const MOTS_VIDES = new Set(['ecole', 'primaire', 'elementaire', 'maternelle', 'publique', 'groupe', 'scolaire', 'de', 'la', 'le', 'les', 'du', 'des', 'd', 'l', 'et', 'ep', 'em', 'ee', 'epp', 'emp', 'eep']);
+function trouverEcole(uai, texte) {
+  if (!uai && /^\s*\d{7}[A-Za-z]\s*$/.test(texte || '')) { uai = texte; texte = ''; }
+  if (uai) { const e = D.Ecoles.find(x => String(x.UAI || '').toUpperCase() === String(uai).trim().toUpperCase()); if (e) return e.id; }
+  if (!texte) return null;
+  const [partNom, partCommune] = String(texte).split(/\s+[-–]\s+/);
+  const jetons = s => new Set(norm(s).split(' ').filter(w => w && !MOTS_VIDES.has(w)));
+  const jn = jetons(partNom), jc = jetons(partCommune || '');
+  let best = null, bestScore = 0, second = 0;
+  for (const e of D.Ecoles) {
+    const en = jetons(e.Nom), ec = jetons(e.Commune);
+    let inter = 0; for (const w of jn) if (en.has(w) || ec.has(w)) inter++;
+    let score = jn.size ? inter / Math.max(jn.size, en.size) : 0;
+    if (jc.size) { let ic = 0; for (const w of jc) if (ec.has(w)) ic++; score = score * 0.7 + (ic / jc.size) * 0.3; }
+    if (score > bestScore) { second = bestScore; bestScore = score; best = e.id; } else if (score > second) second = score;
+  }
+  return bestScore >= 0.5 && bestScore - second >= 0.1 ? best : null;
+}
+function trouverCirco(texte) {
+  const n = norm(texte); if (!n) return null;
+  const c = D.Circonscriptions.find(x => norm(x.Libelle) === n || norm(x.Nom_court) === n || norm(x.Code) === n)
+    || D.Circonscriptions.find(x => norm(x.Nom).endsWith(' ' + n));
+  return c ? c.id : null;
+}
+function trouverPersonne(nom, prenom, mails = []) {
+  for (const m of mails) { if (!m) continue; const p = IDX.personnesParMail.get(String(m).trim().toLowerCase()); if (p) return p.id; }
+  const k = cleNom(nom, prenom); const l = IDX.personnesParNom.get(k);
+  return l && l.length ? l[0].id : null;
+}
+function rendreImport() {
+  if (!S.imp) S.imp = { cible: 'personnes', texte: '', role: 'PEMF', roleEnc: 'MAT', roleEtu: 'M2E1', type: 'Stage massé', fenetre: '', categorie: 'Réunion', mapping: null, entetes: null, apercu: null };
+  const I = S.imp;
+  $('#main').innerHTML = `<div class="carte">
+    <div class="barre"><b>Je colle :</b>
+      ${Object.entries(CIBLES).map(([k, c]) => `<label class="chk"><input type="radio" name="imp-cible" value="${k}" ${I.cible === k ? 'checked' : ''}> ${c.label}</label>`).join(' ')}</div>
+    <div class="barre">
+      ${I.cible === 'personnes' ? `Rôle (si pas de colonne Rôle) <select id="imp-role">${ROLES.map(r => `<option ${r === I.role ? 'selected' : ''}>${r}</option>`).join('')}</select>` : ''}
+      ${I.cible === 'suivis' ? `Rôle encadrants <select id="imp-roleEnc">${ROLES.map(r => `<option ${r === I.roleEnc ? 'selected' : ''}>${r}</option>`).join('')}</select>
+         Rôle étudiants <select id="imp-roleEtu">${ROLES.map(r => `<option ${r === I.roleEtu ? 'selected' : ''}>${r}</option>`).join('')}</select>
+         Type <select id="imp-type">${TYPES_SUIVI.map(t => `<option ${t === I.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+         Fenêtre (si pas de colonne) <input type="text" id="imp-fen" value="${esc(I.fenetre)}" size="12">` : ''}
+      ${I.cible === 'evenements' ? `Catégorie (si pas de colonne) <select id="imp-cat">${Object.keys(CATEGORIES).map(c => `<option ${c === I.categorie ? 'selected' : ''}>${c}</option>`).join('')}</select>` : ''}
+      Année <b>${esc(libA(S.annee))}</b> <span class="muted petit">(sélecteur en haut à droite)</span>
+    </div>
+    <textarea id="imp-txt" rows="8" placeholder="Copiez un tableau depuis Excel / LibreOffice / un CSV (ligne d'en-têtes comprise) et collez-le ici.">${esc(I.texte)}</textarea>
+    <div class="barre" style="margin-top:8px"><button class="btn primaire" id="imp-analyser">Analyser</button>
+      <span class="muted petit">Doublons détectés par mail puis par nom + prénom (dans n'importe quel ordre). Les fiches existantes ne sont complétées que sur les champs vides.</span></div>
+    </div><div id="imp-suite"></div>`;
+  document.querySelectorAll('[name=imp-cible]').forEach(r => r.onchange = () => { I.cible = r.value; I.mapping = null; I.apercu = null; rendreImport(); });
+  const lier = (id, cle) => { const el = $(id); if (el) el.onchange = e => { I[cle] = e.target.value; }; };
+  lier('#imp-role', 'role'); lier('#imp-roleEnc', 'roleEnc'); lier('#imp-roleEtu', 'roleEtu'); lier('#imp-type', 'type'); lier('#imp-fen', 'fenetre'); lier('#imp-cat', 'categorie');
+  $('#imp-txt').oninput = e => { I.texte = e.target.value; };
+  $('#imp-analyser').onclick = () => { const rows = parseTableau(I.texte); if (rows.length < 2) { toast('Collez au moins une ligne d\'en-têtes et une ligne de données'); return; }
+    I.entetes = rows[0]; I.lignes = rows.slice(1); I.mapping = I.entetes.map(h => detecterChamp(I.cible, h)); rendreMapping(); };
+  if (I.mapping) rendreMapping();
+}
+function rendreMapping() {
+  const I = S.imp; const champs = Object.keys(CIBLES[I.cible].champs);
+  $('#imp-suite').innerHTML = `<h3>Correspondance des colonnes</h3>
+    <div class="scroll-table" style="max-height:none"><table class="t"><tr><th>Colonne collée</th><th>Exemple</th><th>Champ</th></tr>
+    ${I.entetes.map((h, i) => `<tr><td>${esc(h)}</td><td class="muted petit">${esc((I.lignes[0] || [])[i] || '')}</td><td><select data-map="${i}"><option value="">(ignorer)</option>${champs.map(f => `<option ${I.mapping[i] === f ? 'selected' : ''}>${f}</option>`).join('')}</select></td></tr>`).join('')}
+    </table></div><div class="barre" style="margin-top:8px"><button class="btn primaire" id="imp-prev">Prévisualiser</button></div><div id="imp-apercu"></div>`;
+  document.querySelectorAll('[data-map]').forEach(s => s.onchange = () => { I.mapping[+s.dataset.map] = s.value; });
+  $('#imp-prev').onclick = () => { I.apercu = preparerImport(); rendreApercuImport(); };
+  if (I.apercu) rendreApercuImport();
+}
+function lireLigne(ligne) {
+  const I = S.imp; const o = {}; const multi = {};
+  I.mapping.forEach((f, i) => { if (!f) return; const v = String(ligne[i] ?? '').trim(); if (!v) return;
+    if (f === 'Etudiant') (multi.Etudiant = multi.Etudiant || []).push(v); else if (!(f in o)) o[f] = v; });
+  return { ...o, ...multi };
+}
+function normRole(v, defaut) {
+  if (!v) return defaut; const n = norm(v).replace(/\s/g, '');
+  const r = ROLES.find(x => norm(x).replace(/\s/g, '') === n);
+  if (r) return r;
+  if (/^m2e?1|^m1/.test(n)) return 'M2E1'; if (/^m2e?2/.test(n)) return 'M2E2'; if (/meef/.test(n)) return 'MEEF2';
+  if (/^l(pe)?1|^lp1/.test(n)) return 'LPE1'; if (/^l(pe)?2|^lp2/.test(n)) return 'LPE2'; if (/direct/.test(n)) return 'Directeur';
+  return defaut;
+}
+function lireCycles(v) { return [...new Set(String(v || '').match(/[123]/g) || [])]; }
+function preparerImport() {
+  const I = S.imp; const ops = [];
+  if (I.cible === 'evenements') {
+    for (const l of I.lignes) {
+      const o = lireLigne(l); let h1 = o.Heure_debut, h2 = o.Heure_fin;
+      if (o.Horaire && !h1) { const parts = o.Horaire.split(/\s*[-–à]\s*/); h1 = parts[0]; h2 = parts[1] || ''; }
+      const cat = Object.keys(CATEGORIES).find(c => norm(c) === norm(o.Categorie)) || (/(cien|ien|inspecteur)/.test(norm(o.Titre || o.Categorie)) ? 'Conseil IEN' : I.categorie);
+      const pub = (o.Publics || '').split(/[,;/]+/).map(x => normRole(x.trim(), null)).filter(Boolean);
+      const d1 = lireDate(o.Date_debut), d2 = lireDate(o.Date_fin);
+      ops.push({ statut: d1 ? 'nouveau' : 'erreur', msg: d1 ? '' : 'date illisible', resume: `${o.Titre || '?'} — ${fDate(d1)}${d2 && d2 !== d1 ? ' → ' + fDate(d2) : ''} ${h1 || ''}`,
+        evt: { Titre: o.Titre || o.Categorie || 'Événement', Categorie: cat, Date_debut: d1, Date_fin: d2 || null, Heure_debut: h1 || '', Heure_fin: h2 || '', Lieu: o.Lieu || '',
+          Publics: pub.length ? ['L', ...pub] : null, Description: [o.Description, o.Publics && !pub.length ? 'Public : ' + o.Publics : ''].filter(Boolean).join('\n'), Statut: o.Statut || 'Prévu', Annee: S.annee, Source: 'Import ' + new Date().toLocaleDateString('fr-FR') } });
+    }
+    return ops;
+  }
+  // Personnes (et suivis) : registre des personnes à créer dans ce lot pour éviter les doublons internes.
+  const nouvelles = new Map();
+  const resoudre = (nom, prenom, mails, extra) => {
+    const id = trouverPersonne(nom, prenom, mails);
+    if (id) return { id, existe: true };
+    const k = cleNom(nom, prenom) || (mails[0] || '').toLowerCase();
+    if (!nouvelles.has(k)) nouvelles.set(k, { tmp: 'n' + nouvelles.size, fields: { Nom: nom, Prenom: prenom, ...extra } });
+    return { tmp: nouvelles.get(k).tmp, existe: false };
+  };
+  if (I.cible === 'personnes') {
+    for (const l of I.lignes) {
+      const o = lireLigne(l); let { Nom: nom = '', Prenom: prenom = '' } = o;
+      if (!nom && o.Nom_complet) ({ Nom: nom, Prenom: prenom } = scinderNomComplet(o.Nom_complet));
+      if (!nom) { ops.push({ statut: 'erreur', msg: 'nom manquant', resume: l.join(' | ').slice(0, 80) }); continue; }
+      const ecole = trouverEcole(o.UAI, o.Ecole_nom), circo = trouverCirco(o.Circo);
+      const civ = /^(mme|madame|mlle|f)/i.test(o.Civilite || '') ? 'Mme' : /^(m|mr|monsieur|h)\b/i.test(o.Civilite || '') ? 'M.' : '';
+      const extra = { Civilite: civ, Mail_pro: o.Mail_pro || '', Mail_perso: o.Mail_perso || '', Telephone: o.Telephone || '', Num_etudiant: o.Num_etudiant || '', Fonction: o.Fonction || '', Ecole: ecole || 0 };
+      const pers = resoudre(nom, prenom, [o.Mail_pro, o.Mail_perso], extra);
+      const role = normRole(o.Role, I.role); const cyc = lireCycles(o.Cycle);
+      const dejaRole = pers.existe && rolesDe(pers.id).some(r => r.Role === role);
+      ops.push({ statut: !pers.existe ? 'nouveau' : dejaRole ? 'existant' : 'complété', pers, extra,
+        role: dejaRole ? null : { Role: role, Annee: S.annee, Ecole: 0, Circo_saisie: !ecole && circo ? circo : 0, Groupe: o.Groupe || '', Cycle: cyc.length ? ['L', ...cyc] : null, Modalite: o.Modalite || '', Decharge: o.Decharge || '', Detail: o.Detail || '' },
+        resume: `${(nom || '').toUpperCase()} ${prenom} · ${role}${o.Groupe ? ' · ' + o.Groupe : ''}`,
+        msg: [(o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : '', ecole ? '🏫 ' + libE(ecole) : '', o.Circo && !circo ? `circo non reconnue : « ${o.Circo} »` : ''].filter(Boolean).join(' · ') });
+    }
+  } else {
+    const vus = new Set();
+    for (const l of I.lignes) {
+      const o = lireLigne(l);
+      let en = o.Encadrant_nom || '', ep = o.Encadrant_prenom || '';
+      if (!en && o.Encadrant) ({ Nom: en, Prenom: ep } = scinderNomComplet(o.Encadrant));
+      if (!en || !(o.Etudiant || []).length) { ops.push({ statut: 'erreur', msg: 'encadrant ou étudiant manquant', resume: l.join(' | ').slice(0, 80) }); continue; }
+      const ecole = trouverEcole(o.UAI, o.Ecole_nom), circo = trouverCirco(o.Circo), cyc = lireCycles(o.Cycle);
+      const enc = resoudre(en, ep, [], { Ecole: ecole || 0 });
+      const encMaj = enc.existe && ecole && !(P(enc.id) || {}).Ecole ? ecole : 0;
+      const encRole = !enc.existe || !rolesDe(enc.id).some(r => r.Role === I.roleEnc || ROLES_ENCADRANTS.includes(r.Role) || r.Role === 'Formateur') ? { Role: I.roleEnc, Annee: S.annee, Circo_saisie: !ecole && circo ? circo : 0, Cycle: cyc.length ? ['L', ...cyc] : null } : null;
+      for (const etuTxt of o.Etudiant) {
+        const { Nom: n, Prenom: p } = scinderNomComplet(etuTxt);
+        const etu = resoudre(n, p, [], {});
+        const cle = `${enc.id || enc.tmp}|${etu.id || etu.tmp}|${o.Fenetre || I.fenetre}`;
+        const doublon = (enc.existe && etu.existe && D.Suivis.some(s => s.Annee === S.annee && s.Encadrant === enc.id && s.Etudiant === etu.id && (s.Fenetre || '') === (o.Fenetre || I.fenetre))) || vus.has(cle);
+        vus.add(cle);
+        const etuRole = !etu.existe || !rolesDe(etu.id).some(r => r.Role === I.roleEtu || ROLES_ETUDIANTS.includes(r.Role)) ? { Role: I.roleEtu, Annee: S.annee, Groupe: o.Groupe || '' } : null;
+        ops.push({ statut: doublon ? 'existant' : 'nouveau', enc, etu, encRole, etuRole, encMaj,
+          suivi: doublon ? null : { Type: normType(o.Type) || I.type, Fenetre: o.Fenetre || I.fenetre, Groupe: o.Groupe || '', Debut: lireDate(o.Debut), Fin: lireDate(o.Fin), Annee: S.annee, Statut: 'Prévu', Ecole: 0 },
+          resume: `${etuTxt} → ${en.toUpperCase()} ${ep} · ${o.Fenetre || I.fenetre}${o.Groupe ? ' · ' + o.Groupe : ''}`,
+          msg: [!enc.existe ? 'encadrant créé' : '', !etu.existe ? 'étudiant créé' : '', (o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : ecole ? '🏫 ' + libE(ecole) : ''].filter(Boolean).join(' · ') });
+      }
+    }
+  }
+  ops.nouvelles = nouvelles;
+  return ops;
+}
+function normType(v) { const n = norm(v); if (!n) return ''; return TYPES_SUIVI.find(t => norm(t) === n) || (/masse/.test(n) ? 'Stage massé' : /file/.test(n) ? 'Stage filé' : /t0/.test(n) ? 'Tutorat T0' : /visite/.test(n) ? 'Visite' : ''); }
+function rendreApercuImport() {
+  const ops = S.imp.apercu; const n = s => ops.filter(o => o.statut === s).length;
+  const nbNouvPers = ops.nouvelles ? ops.nouvelles.size : 0;
+  $('#imp-apercu').innerHTML = `<h3>Aperçu</h3><p>
+    <span class="ok">${n('nouveau')} nouvelle(s) ligne(s)</span> · ${n('complété')} complétée(s) · <span class="muted">${n('existant')} déjà présente(s)</span> · <span class="ko">${n('erreur')} en erreur</span>
+    ${S.imp.cible !== 'evenements' ? ` · <b>${nbNouvPers}</b> personne(s) à créer` : ''}</p>
+    <div class="scroll-table"><table class="t"><tr><th>Statut</th><th>Ligne</th><th>Remarques</th></tr>
+    ${ops.map(o => `<tr><td class="${o.statut === 'erreur' ? 'ko' : o.statut === 'existant' ? 'muted' : 'ok'}">${o.statut}</td><td>${esc(o.resume)}</td><td class="petit ${/non reconnue/.test(o.msg) ? 'warn' : 'muted'}">${esc(o.msg || '')}</td></tr>`).join('')}
+    </table></div>
+    <div class="barre" style="margin-top:8px"><button class="btn primaire" id="imp-go" ${ops.some(o => o.statut === 'nouveau' || o.statut === 'complété') ? '' : 'disabled'}>Importer dans Grist</button></div>`;
+  $('#imp-go').onclick = executerImport;
+}
+async function executerImport() {
+  const I = S.imp, ops = I.apercu; const bouton = $('#imp-go'); bouton.disabled = true; bouton.textContent = 'Import en cours…';
+  try {
+    if (I.cible === 'evenements') {
+      const ev = ops.filter(o => o.statut === 'nouveau').map(o => o.evt);
+      const cols = Object.keys(ev[0]); const data = {}; for (const c of cols) data[c] = ev.map(e => e[c]);
+      await agir([['BulkAddRecord', 'Evenements', ev.map(() => null), data]], `${ev.length} événement(s) importé(s)`);
+    } else {
+      // 1. Personnes nouvelles
+      const nouv = [...ops.nouvelles.values()]; const tmpId = new Map();
+      if (nouv.length) {
+        const cols = ['Nom', 'Prenom', 'Civilite', 'Mail_pro', 'Mail_perso', 'Telephone', 'Num_etudiant', 'Fonction', 'Ecole'];
+        const data = {}; for (const c of cols) data[c] = nouv.map(n => n.fields[c] ?? (c === 'Ecole' ? 0 : ''));
+        const r = await grist.docApi.applyUserActions([['BulkAddRecord', 'Personnes', nouv.map(() => null), data]]);
+        r.retValues[0].forEach((id, i) => tmpId.set(nouv[i].tmp, id));
+      }
+      const idDe = x => x.existe ? x.id : tmpId.get(x.tmp);
+      const actions = []; const rolesVus = new Set();
+      const ajouterRole = (pid, role) => { const k = `${pid}|${role.Role}`; if (rolesVus.has(k)) return; rolesVus.add(k); const f = { ...role }; delete f._fait; actions.push(['AddRecord', 'Roles', null, { Personne: pid, ...f }]); };
+      for (const o of ops) {
+        if (o.statut === 'erreur') continue;
+        if (I.cible === 'personnes') {
+          const pid = idDe(o.pers);
+          if (o.pers.existe) { // compléter les champs vides
+            const p = P(pid); const maj = {};
+            for (const [k, v] of Object.entries(o.extra)) if (v && !p[k]) maj[k] = v;
+            if (Object.keys(maj).length) actions.push(['UpdateRecord', 'Personnes', pid, maj]);
+          }
+          if (o.role) ajouterRole(pid, o.role);
+        } else {
+          const enc = idDe(o.enc), etu = idDe(o.etu);
+          if (o.encRole) ajouterRole(enc, o.encRole);
+          if (o.encMaj && !rolesVus.has('ecole|' + enc)) { rolesVus.add('ecole|' + enc); actions.push(['UpdateRecord', 'Personnes', enc, { Ecole: o.encMaj }]); }
+          if (o.etuRole) ajouterRole(etu, o.etuRole);
+          if (o.suivi) actions.push(['AddRecord', 'Suivis', null, { ...o.suivi, Encadrant: enc, Etudiant: etu }]);
+        }
+      }
+      if (actions.length) await grist.docApi.applyUserActions(actions);
+      await charger(); toast(`Import terminé : ${nouv.length} personne(s) créée(s), ${actions.length} opération(s)`, 4000);
+    }
+    I.apercu = null; I.mapping = null; I.texte = ''; rendreImport();
+  } catch (e) { console.error(e); bouton.disabled = false; bouton.textContent = 'Importer dans Grist'; modale('Erreur d\'import', `<p class="ko">${esc(e.message || e)}</p>`); }
+}
+
+/* =====================================================================
+   11. RÉGLAGES (structure, année, paramètres, écoles open data)
+   ===================================================================== */
+function rendreReglages() {
+  const manq = S.manquantes || [];
+  $('#main').innerHTML = `<div class="deux-col">
+    <div>
+      <div class="carte"><h2>Structure du document</h2>
+        ${manq.length ? `<p class="ko">Tables manquantes : ${manq.join(', ')}</p><button class="btn primaire" id="r-init">Créer les tables manquantes</button>` : `<p class="ok">Les ${TABLES.length} tables sont présentes.</p>`}
+        <button class="btn" id="r-refs">Réparer l'affichage des références</button></div>
+      <div class="carte" style="margin-top:12px"><h2>Année scolaire courante</h2>
+        <p class="muted petit">Pilote les colonnes calculées (IEN de la circo, directeur, rôles courants) et l'année affichée par défaut.</p>
+        <div class="barre"><select id="r-annee">${D.Annees.map(a => `<option value="${a.id}" ${a.Courante ? 'selected' : ''}>${esc(a.Annee)}</option>`).join('')}</select>
+          <button class="btn primaire" id="r-annee-ok">Définir comme courante</button>
+          <button class="btn" id="r-annee-add">+ année suivante</button></div></div>
+      <div class="carte" style="margin-top:12px"><h2>Écoles et circonscriptions (open data)</h2>
+        <p class="muted petit">Source : Annuaire de l'éducation (data.education.gouv.fr), écoles publiques ouvertes du département <b>${esc(param('DEPARTEMENT') || '006')}</b>. Met à jour coordonnées et rattachement de circonscription ; ne touche ni aux notes ni aux noms courts déjà saisis.</p>
+        <button class="btn primaire" id="r-ecoles">Importer / mettre à jour les écoles</button> <span id="r-ecoles-etat" class="muted"></span>
+        <p class="muted petit">${D.Ecoles.length} écoles, ${D.Circonscriptions.length} circonscriptions dans le document.</p></div>
+    </div>
+    <div class="carte"><h2>Paramètres</h2>
+      <div class="formulaire">${D.Parametres.map(p => `<label title="${esc(p.Description || '')}">${esc(p.Cle)}</label><input type="${/JETON/.test(p.Cle) ? 'password' : 'text'}" data-param="${p.id}" value="${esc(p.Valeur || '')}" placeholder="${esc(p.Description || '')}">`).join('')}</div>
+      <div class="barre" style="margin-top:10px"><button class="btn primaire" id="r-params">Enregistrer</button>
+        <button class="btn" id="r-ping">Tester la connexion n8n</button>
+        <button class="btn" id="r-jeton">Générer un jeton</button></div>
+      <p class="muted petit">Les modèles de mails et de documents se modifient directement dans la table <b>Modeles</b> (HTML accepté, champs <code>{{Prenom}}</code>, <code>{{Ecole}}</code>…).</p>
+    </div></div>`;
+  const b = (id, f) => { const el = $(id); if (el) el.onclick = f; };
+  b('#r-init', initialiser);
+  b('#r-refs', async () => { await reglerAffichageRefs(); toast('Références réglées'); });
+  b('#r-annee-ok', async () => { const id = +$('#r-annee').value; await agir([['BulkUpdateRecord', 'Annees', D.Annees.map(a => a.id), { Courante: D.Annees.map(a => a.id === id) }]], 'Année courante modifiée'); S.annee = id; remplirAnnees(); rendre(); });
+  b('#r-annee-add', async () => { const der = [...D.Annees].sort((a, b) => String(a.Annee).localeCompare(String(b.Annee))).pop(); const y = der ? +String(der.Annee).slice(0, 4) + 1 : new Date().getFullYear();
+    await agir([['AddRecord', 'Annees', null, { Annee: `${y}-${y + 1}`, Courante: false, Debut: Date.UTC(y, 8, 1) / 1000, Fin: Date.UTC(y + 1, 7, 31) / 1000 }]], `Année ${y}-${y + 1} ajoutée`); rendre(); });
+  b('#r-params', async () => { const ids = [], vals = []; document.querySelectorAll('[data-param]').forEach(i => { ids.push(+i.dataset.param); vals.push(i.value.trim()); });
+    await agir([['BulkUpdateRecord', 'Parametres', ids, { Valeur: vals }]], 'Paramètres enregistrés'); });
+  b('#r-jeton', () => { const a = new Uint8Array(24); crypto.getRandomValues(a); const j = [...a].map(x => x.toString(16).padStart(2, '0')).join('');
+    const champ = [...document.querySelectorAll('[data-param]')].find(i => (IDX.Parametres.get(+i.dataset.param) || {}).Cle === 'N8N_JETON');
+    if (champ) { champ.value = j; champ.type = 'text'; } toast('Jeton généré : enregistrez, puis copiez-le dans le nœud Config des workflows n8n', 5000); });
+  b('#r-ping', async () => { const cfg = verifierN8n('N8N_URL_PUBLIPOSTAGE'); if (!cfg) return;
+    try { await posterN8n(cfg.url, { jeton: cfg.jeton, lot: 'PING', messages: [] }); toast('n8n a bien reçu la requête ✔'); } catch (e) { modale('Connexion n8n impossible', `<p class="ko">${esc(e.message || e)}</p><p class="muted">Causes fréquentes : workflow inactif, URL de test au lieu de production, blocage CORS (option « Allowed Origins » du nœud Webhook).</p>`); } });
+  b('#r-ecoles', importerEcoles);
+}
+function nomCourtCirco(nom) {
+  let s = String(nom || '').replace(/^circonscription\s+(d'inspection\s+)?(de l'enseignement\s+)?(du\s+)?(1er|premier)\s+degr[ée]\s*/i, '').trim();
+  const art = [[/^de la /i, 'La '], [/^de l['’]/i, "L'"], [/^du /i, 'Le '], [/^des /i, 'Les '], [/^de /i, ''], [/^d['’]/i, '']];
+  for (const [re, rep] of art) if (re.test(s)) { s = s.replace(re, rep); break; }
+  return s || nom;
+}
+async function importerEcoles() {
+  const etat = $('#r-ecoles-etat'); const dep = (param('DEPARTEMENT') || '006').padStart(3, '0');
+  etat.textContent = 'Téléchargement…';
+  try {
+    const where = `code_departement="${dep}" and type_etablissement="Ecole" and statut_public_prive="Public" and etat="OUVERT"`;
+    const select = 'identifiant_de_l_etablissement,nom_etablissement,ecole_maternelle,ecole_elementaire,adresse_1,code_postal,nom_commune,telephone,mail,ulis,appartenance_education_prioritaire,latitude,longitude,etat,code_circonscription,nom_circonscription';
+    const url = `https://data.education.gouv.fr/api/explore/v2.1/catalog/datasets/fr-en-annuaire-education/exports/json?where=${encodeURIComponent(where)}&select=${select}`;
+    const rep = await fetch(url); if (!rep.ok) throw new Error('Open data : ' + rep.status);
+    const data = await rep.json(); etat.textContent = `${data.length} écoles reçues, mise à jour…`;
+    // Circonscriptions
+    const circos = new Map(); for (const d of data) if (d.code_circonscription) circos.set(d.code_circonscription, d.nom_circonscription);
+    const parCode = new Map(D.Circonscriptions.map(c => [c.Code, c]));
+    const addC = [...circos].filter(([code]) => !parCode.has(code));
+    const updC = [...circos].filter(([code, nom]) => parCode.has(code) && parCode.get(code).Nom !== nom);
+    const act1 = [];
+    if (addC.length) act1.push(['BulkAddRecord', 'Circonscriptions', addC.map(() => null), { Code: addC.map(x => x[0]), Nom: addC.map(x => x[1]), Nom_court: addC.map(x => nomCourtCirco(x[1])) }]);
+    if (updC.length) act1.push(['BulkUpdateRecord', 'Circonscriptions', updC.map(x => parCode.get(x[0]).id), { Nom: updC.map(x => x[1]) }]);
+    if (act1.length) await grist.docApi.applyUserActions(act1);
+    await charger();
+    const idCirco = new Map(D.Circonscriptions.map(c => [c.Code, c.id]));
+    // Écoles
+    const parUai = new Map(D.Ecoles.map(e => [e.UAI, e]));
+    const champs = d => ({ UAI: d.identifiant_de_l_etablissement, Nom: d.nom_etablissement,
+      Type: d.ecole_maternelle && d.ecole_elementaire ? 'Primaire' : d.ecole_maternelle ? 'Maternelle' : 'Élémentaire',
+      Commune: d.nom_commune || '', Adresse: d.adresse_1 || '', Code_postal: d.code_postal || '', Telephone: d.telephone || '', Mail: d.mail || '',
+      Circonscription: idCirco.get(d.code_circonscription) || 0, Education_prioritaire: d.appartenance_education_prioritaire || '', ULIS: !!d.ulis,
+      Latitude: d.latitude ?? null, Longitude: d.longitude ?? null, Etat: d.etat || '' });
+    const nouv = [], maj = [];
+    for (const d of data) { const f = champs(d); const ex = parUai.get(f.UAI); if (ex) maj.push([ex.id, f]); else nouv.push(f); }
+    const cols = Object.keys(champs(data[0] || {})); const act2 = [];
+    const colonne = (arr, c) => arr.map(f => f[c]);
+    if (nouv.length) { const o = {}; for (const c of cols) o[c] = colonne(nouv, c); act2.push(['BulkAddRecord', 'Ecoles', nouv.map(() => null), o]); }
+    if (maj.length) { const o = {}; for (const c of cols) o[c] = maj.map(x => x[1][c]); act2.push(['BulkUpdateRecord', 'Ecoles', maj.map(x => x[0]), o]); }
+    if (act2.length) await grist.docApi.applyUserActions(act2);
+    await charger();
+    etat.innerHTML = `<span class="ok">✔ ${nouv.length} école(s) ajoutée(s), ${maj.length} mise(s) à jour, ${addC.length} circonscription(s) créée(s).</span>`;
+  } catch (e) { console.error(e); etat.innerHTML = `<span class="ko">Erreur : ${esc(e.message || e)}</span>`; }
+}
+
+/* =====================================================================
+   12. DÉMARRAGE
+   ===================================================================== */
+document.addEventListener('click', e => {
+  const o = e.target.closest('[data-ouvrir]'); if (o) { const [t, id] = o.dataset.ouvrir.split(':'); ouvrir(t, id); }
+});
+document.querySelectorAll('#onglets button').forEach(b => b.onclick = () => { S.onglet = b.dataset.tab; rendre(); });
+$('#annee').onchange = e => { S.annee = +e.target.value; if (S.listes) S.listes.coches = null; rendre(); };
+$('#btn-refresh').onclick = async () => { await charger(); rendre(); toast('Données rechargées'); };
+$('#voile').addEventListener('click', e => { if (e.target.id === 'voile') $('#voile').classList.remove('ouvert'); });
+
+grist.ready({ requiredAccess: 'full', allowSelectBy: false });
+grist.onRecords(() => { if (S.pret) rechargerPlusTard(); });
+window.addEventListener('focus', () => { if (S.pret) rechargerPlusTard(); });
+(async () => {
+  try { await charger(); S.pret = true; rendre(); }
+  catch (e) {
+    console.error(e);
+    $('#main').innerHTML = `<div class="carte"><h2 class="ko">Accès au document impossible</h2><p>${esc(e.message || e)}</p>
+      <p>Dans le panneau de droite de Grist, onglet <b>Widget</b>, réglez l'accès sur <b>« Accès complet au document »</b>, puis rechargez.</p></div>`;
+  }
+})();
+</script>
+</body>
+</html>
