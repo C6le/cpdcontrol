@@ -327,7 +327,7 @@ async function charger() {
   S.manquantes = TABLES.filter(t => !presentes.includes(t));
   for (const t of TABLES) {
     if (S.manquantes.includes(t)) { D[t] = []; IDX[t] = new Map(); continue; }
-    try { D[t] = enLignes(await grist.docApi.fetchTable(t)); } catch (e) { D[t] = []; }
+    try { D[t] = normaliser(t, enLignes(await grist.docApi.fetchTable(t))); } catch (e) { D[t] = []; }
     IDX[t] = new Map(D[t].map(r => [r.id, r]));
   }
   // Index utiles
@@ -342,6 +342,18 @@ async function charger() {
   const courante = D.Annees.find(a => a.Courante) || D.Annees[D.Annees.length - 1];
   if (!S.annee || !IDX.Annees.has(S.annee)) S.annee = courante ? courante.id : null;
   remplirAnnees();
+}
+// Colonnes réellement multi-valeurs ; ailleurs, une liste Grist (['L', …]) est aplatie en texte.
+const COLONNES_LISTE = { Roles: ['Cycle'], Evenements: ['Publics', 'Participants'], Actions: ['Concerne'], Circonscriptions: ['CPC'] };
+function normaliser(t, rows) {
+  const garder = COLONNES_LISTE[t] || [];
+  // Si la colonne Role est passée en « Choix multiple », une ligne à plusieurs rôles devient plusieurs rôles.
+  if (t === 'Roles') rows = rows.flatMap(r => Array.isArray(r.Role) ? (liste(r.Role).length ? liste(r.Role).map(x => ({ ...r, Role: x })) : [{ ...r, Role: '' }]) : [r]);
+  for (const r of rows) for (const k of Object.keys(r)) {
+    if (garder.includes(k) || !Array.isArray(r[k])) continue;
+    r[k] = r[k][0] === 'L' ? r[k].slice(1).join(', ') : '';
+  }
+  return rows;
 }
 function grouper(rows, cle) { const m = new Map(); for (const r of rows) { const k = r[cle]; if (!k) continue; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; }
 async function agir(actions, msg) {
@@ -501,7 +513,9 @@ function rendreTableau() {
   const compte = {}; for (const r of rolesAnnee) compte[r.Role] = (compte[r.Role] || new Set()).add(r.Personne);
   const kpis = ROLES.filter(r => compte[r]).map(r => `<div class="kpi" data-kpi="${esc(r)}"><div class="v">${compte[r].size}</div><div class="l">${esc(r)}</div></div>`).join('');
   const alertes = calculerAlertes();
-  const evts = D.Evenements.filter(e => e.Date_debut && (e.Date_fin || e.Date_debut) >= auj && e.Date_debut <= auj + 14 * JOUR && e.Statut !== 'Annulé')
+  const F = filtresTableau();
+  const evts = D.Evenements.filter(e => e.Date_debut && (e.Date_fin || e.Date_debut) >= auj && e.Date_debut <= auj + F.jours * JOUR && e.Statut !== 'Annulé'
+      && F.cats.includes(CATEGORIES[e.Categorie] ? e.Categorie : 'Autre'))
     .sort((a, b) => a.Date_debut - b.Date_debut || String(a.Heure_debut || '').localeCompare(String(b.Heure_debut || '')));
   const actions = D.Actions.filter(a => !['Fait', 'Abandonné'].includes(a.Statut) && a.Echeance && a.Echeance <= auj + 7 * JOUR).sort((a, b) => a.Echeance - b.Echeance);
   $('#main').innerHTML = `
@@ -518,19 +532,37 @@ function rendreTableau() {
         ${actions.length ? `<table class="t"><tr><th>Échéance</th><th>Action</th><th>Contexte</th><th>Statut</th></tr>${actions.map(a => `<tr><td class="${a.Echeance < auj ? 'ko' : ''}">${fDate(a.Echeance)}</td><td>${esc(a.Titre)}${a.Projet ? ` <span class="muted petit">(${esc(a.Projet)})</span>` : ''}</td><td>${esc(a.Contexte || '')}</td><td>${esc(a.Statut || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Rien d\'urgent.</p>'}
       </div>
       <div>
-        <h3>Les 14 prochains jours</h3>
+        <h3>Les <select id="d-jours" class="petit">${[7, 14, 30, 60, 90].map(n => `<option value="${n}" ${F.jours === n ? 'selected' : ''}>${n}</option>`).join('')}</select> prochains jours</h3>
+        <div class="chips" id="d-cats" style="margin-bottom:6px">${Object.entries(CATEGORIES).map(([c, col]) => `<span class="chip ${F.cats.includes(c) ? 'on' : ''}" data-v="${esc(c)}" style="${F.cats.includes(c) ? `background:${col};border-color:${col}` : ''}">${esc(c)}</span>`).join('')}
+          <span class="chip" data-tout="1" title="Tout cocher / tout décocher">${F.cats.length === Object.keys(CATEGORIES).length ? 'aucun' : 'tous'}</span></div>
         ${evts.length ? `<table class="t"><tr><th>Date</th><th>Événement</th><th>Lieu</th></tr>${evts.map(e => `<tr><td style="white-space:nowrap">${fDate(e.Date_debut)}${e.Date_fin && e.Date_fin !== e.Date_debut ? ' → ' + fDate(e.Date_fin) : ''}<br><span class="muted petit">${esc([e.Heure_debut, e.Heure_fin].filter(Boolean).join(' – '))}</span></td><td>${badgeCat(e.Categorie)} <b>${esc(e.Titre)}</b>${liste(e.Publics).length ? `<br>${liste(e.Publics).map(x => `<span class="badge">${esc(x)}</span>`).join('')}` : ''}</td><td>${esc(e.Lieu || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun événement.</p>'}
         <h3>Derniers envois</h3>
         ${D.Envois.length ? `<table class="t"><tr><th>Date</th><th>Destinataire</th><th>Objet</th><th>Statut</th></tr>${[...D.Envois].sort((a, b) => (b.Date || 0) - (a.Date || 0)).slice(0, 8).map(e => `<tr><td>${fDateTime(e.Date)}</td><td>${lienP(e.Personne) || esc(e.Destinataire)}</td><td>${esc(e.Objet || '')}</td><td class="${e.Statut === 'Erreur' ? 'ko' : e.Statut === 'Envoyé' || e.Statut === 'Généré' ? 'ok' : ''}">${esc(e.Statut || '')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun envoi.</p>'}
       </div>
     </div>`;
   document.querySelectorAll('[data-alerte]').forEach(el => el.onclick = () => ouvrirAlerte(alertes.find(a => a.cle === el.dataset.alerte)));
+  document.querySelectorAll('#d-cats .chip').forEach(c => c.onclick = () => {
+    const toutes = Object.keys(CATEGORIES);
+    if (c.dataset.tout) F.cats = F.cats.length === toutes.length ? [] : toutes;
+    else F.cats = F.cats.includes(c.dataset.v) ? F.cats.filter(x => x !== c.dataset.v) : [...F.cats, c.dataset.v];
+    memoriserTableau(F); rendreTableau();
+  });
+  $('#d-jours').onchange = e => { F.jours = +e.target.value; memoriserTableau(F); rendreTableau(); };
   document.querySelectorAll('[data-kpi]').forEach(el => el.onclick = () => {
     const k = el.dataset.kpi;
     if (k.startsWith('__')) { S.onglet = 'search'; S.recherche = ''; S.filtreType = k === '__ecoles' ? 'e' : k === '__circos' ? 'c' : 'p'; rendre(); return; }
     S.listes = { ...(S.listes || etatListesDefaut()), roles: [k], circos: [], groupe: '', cycle: '' }; S.onglet = 'lists'; rendre();
   });
 }
+// Filtres de l'agenda du tableau de bord, mémorisés dans ce navigateur.
+function filtresTableau() {
+  if (!S.dash) {
+    let m = null; try { m = JSON.parse(localStorage.getItem('cpd-dash') || 'null'); } catch (e) { /* stockage indisponible */ }
+    S.dash = { cats: Array.isArray(m && m.cats) ? m.cats.filter(c => CATEGORIES[c]) : Object.keys(CATEGORIES), jours: (m && +m.jours) || 14 };
+  }
+  return S.dash;
+}
+function memoriserTableau(F) { try { localStorage.setItem('cpd-dash', JSON.stringify(F)); } catch (e) { /* ignoré */ } }
 function ouvrirAlerte(a) {
   let corps = '';
   if (a.ids) corps = `<table class="t"><tr><th>Personne</th><th>Rôles</th><th>Mail</th></tr>${a.ids.map(id => { const p = P(id) || {}; return `<tr><td>${lienP(id)}</td><td>${rolesDe(id).map(r => `<span class="badge role">${esc(r.Role)}</span>`).join('')}</td><td>${esc(p.Mail || '')}</td></tr>`; }).join('')}</table>`;
@@ -1306,7 +1338,8 @@ function rendreReglages() {
     <div>
       <div class="carte"><h2>Structure du document</h2>
         ${manq.length ? `<p class="ko">Tables manquantes : ${manq.join(', ')}</p><button class="btn primaire" id="r-init">Créer les tables manquantes</button>` : `<p class="ok">Les ${TABLES.length} tables sont présentes.</p>`}
-        <button class="btn" id="r-refs">Réparer l'affichage des références</button></div>
+        <button class="btn" id="r-refs">Réparer l'affichage des références</button>
+        <div id="r-multi"></div></div>
       <div class="carte" style="margin-top:12px"><h2>Année scolaire courante</h2>
         <p class="muted petit">Pilote les colonnes calculées (IEN de la circo, directeur, rôles courants) et l'année affichée par défaut.</p>
         <div class="barre"><select id="r-annee">${D.Annees.map(a => `<option value="${a.id}" ${a.Courante ? 'selected' : ''}>${esc(a.Annee)}</option>`).join('')}</select>
@@ -1327,6 +1360,7 @@ function rendreReglages() {
   const b = (id, f) => { const el = $(id); if (el) el.onclick = f; };
   b('#r-init', initialiser);
   b('#r-refs', async () => { await reglerAffichageRefs(); toast('Références réglées'); });
+  signalerRolesMultiples();
   b('#r-annee-ok', async () => { const id = +$('#r-annee').value; await agir([['BulkUpdateRecord', 'Annees', D.Annees.map(a => a.id), { Courante: D.Annees.map(a => a.id === id) }]], 'Année courante modifiée'); S.annee = id; remplirAnnees(); rendre(); });
   b('#r-annee-add', async () => { const der = [...D.Annees].sort((a, b) => String(a.Annee).localeCompare(String(b.Annee))).pop(); const y = der ? +String(der.Annee).slice(0, 4) + 1 : new Date().getFullYear();
     await agir([['AddRecord', 'Annees', null, { Annee: `${y}-${y + 1}`, Courante: false, Debut: Date.UTC(y, 8, 1) / 1000, Fin: Date.UTC(y + 1, 7, 31) / 1000 }]], `Année ${y}-${y + 1} ajoutée`); rendre(); });
@@ -1338,6 +1372,44 @@ function rendreReglages() {
   b('#r-ping', async () => { const cfg = verifierN8n('N8N_URL_PUBLIPOSTAGE'); if (!cfg) return;
     try { await posterN8n(cfg.url, { jeton: cfg.jeton, lot: 'PING', messages: [] }); toast('n8n a bien reçu la requête ✔'); } catch (e) { modale('Connexion n8n impossible', `<p class="ko">${esc(e.message || e)}</p><p class="muted">Causes fréquentes : workflow inactif, URL de test au lieu de production, blocage CORS (option « Allowed Origins » du nœud Webhook).</p>`); } });
   b('#r-ecoles', importerEcoles);
+}
+/* --- Colonne Role passée en « Choix multiple » : une ligne par rôle, puis retour en « Choix » --- */
+async function typeColonneRole() {
+  const tabs = enLignes(await grist.docApi.fetchTable('_grist_Tables'));
+  const t = tabs.find(x => x.tableId === 'Roles'); if (!t) return null;
+  const col = enLignes(await grist.docApi.fetchTable('_grist_Tables_column')).find(c => c.parentId === t.id && c.colId === 'Role');
+  return col ? col.type : null;
+}
+async function signalerRolesMultiples() {
+  const zone = $('#r-multi'); if (!zone) return;
+  let type = null; try { type = await typeColonneRole(); } catch (e) { return; }
+  if (type !== 'ChoiceList') return;
+  const brut = enLignes(await grist.docApi.fetchTable('Roles'));
+  const multiples = brut.filter(r => liste(r.Role).length > 1);
+  zone.innerHTML = `<div class="alerte orange" style="cursor:default;margin-top:10px;display:block">
+      La colonne <b>Role</b> est en « Choix multiple ». ${multiples.length} ligne(s) portent plusieurs rôles.
+      Le bouton ci-dessous crée une ligne par rôle (en recopiant année, école, circo, groupe, cycle…), puis repasse la colonne en « Choix » simple.</div>
+    <button class="btn primaire" id="r-eclater">Une ligne par rôle</button>`;
+  $('#r-eclater').onclick = () => eclaterRoles(brut, multiples);
+}
+async function eclaterRoles(brut, multiples) {
+  const nbNouv = multiples.reduce((n, r) => n + liste(r.Role).length - 1, 0);
+  const ok = await modale('Une ligne par rôle', `<p>${multiples.length} ligne(s) seront éclatées : <b>${nbNouv}</b> ligne(s) de rôle ajoutée(s), puis la colonne Role repassera en « Choix » simple.</p>
+    <p class="muted petit">Exemple : « PEMF, CPC, Candidat CAFIPEMF » → 3 lignes. Aucune donnée n'est supprimée ; Ctrl+Z dans Grist annule si besoin.</p>`,
+    [{ label: 'Annuler', valeur: false }, { label: 'Éclater et convertir', primaire: true, valeur: true }]);
+  if (!ok) return;
+  const copier = ['Personne', 'Annee', 'Ecole', 'Circo_saisie', 'Cycle', 'Groupe', 'Modalite', 'Decharge', 'Detail'];
+  // 1. Colonne en « Choix » (en gardant tous les choix existants) ; 2. réécriture explicite des valeurs,
+  // car la conversion automatique de Grist produirait « ('PEMF',) » ; 3. une ligne de plus par rôle supplémentaire.
+  const choix = [...new Set([...ROLES, ...brut.flatMap(r => liste(r.Role))])];
+  const actions = [['ModifyColumn', 'Roles', 'Role', { type: 'Choice', widgetOptions: JSON.stringify({ choices: choix }) }],
+    ['BulkUpdateRecord', 'Roles', brut.map(r => r.id), { Role: brut.map(r => liste(r.Role)[0] || (typeof r.Role === 'string' ? r.Role : '')) }]];
+  for (const r of multiples) for (const x of liste(r.Role).slice(1)) {
+    const f = { Role: x }; for (const k of copier) if (r[k] != null && r[k] !== '') f[k] = r[k];
+    actions.push(['AddRecord', 'Roles', null, f]);
+  }
+  try { await agir(actions, `${nbNouv} rôle(s) ajouté(s), colonne Role en « Choix »`); rendre(); }
+  catch (e) { modale('Erreur', `<p class="ko">${esc(e.message || e)}</p>`); }
 }
 function nomCourtCirco(nom) {
   let s = String(nom || '').replace(/^circonscription\s+(d'inspection\s+)?(de l'enseignement\s+)?(du\s+)?(1er|premier)\s+degr[ée]\s*/i, '').trim();
