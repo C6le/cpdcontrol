@@ -343,12 +343,21 @@ async function charger() {
   if (!S.annee || !IDX.Annees.has(S.annee)) S.annee = courante ? courante.id : null;
   remplirAnnees();
 }
+// Lit une valeur de rôle quel que soit son format : liste Grist ['L', …], texte « PEMF, CPC »,
+// ou reste de conversion « ('PEMF', 'CPC') ».
+function lireRoles(v) {
+  if (Array.isArray(v)) return v[0] === 'L' ? v.slice(1).map(String).filter(Boolean) : [];
+  const t = String(v ?? '').trim(); if (!t) return [];
+  const tuple = t.match(/^\(\s*(.*?)\s*,?\s*\)$/);
+  const corps = tuple ? tuple[1] : t;
+  return corps.split(/\s*[,;]\s*/).map(x => x.replace(/^['"]|['"]$/g, '').trim()).filter(Boolean);
+}
 // Colonnes réellement multi-valeurs ; ailleurs, une liste Grist (['L', …]) est aplatie en texte.
 const COLONNES_LISTE = { Roles: ['Cycle'], Evenements: ['Publics', 'Participants'], Actions: ['Concerne'], Circonscriptions: ['CPC'] };
 function normaliser(t, rows) {
   const garder = COLONNES_LISTE[t] || [];
   // Si la colonne Role est passée en « Choix multiple », une ligne à plusieurs rôles devient plusieurs rôles.
-  if (t === 'Roles') rows = rows.flatMap(r => Array.isArray(r.Role) ? (liste(r.Role).length ? liste(r.Role).map(x => ({ ...r, Role: x })) : [{ ...r, Role: '' }]) : [r]);
+  if (t === 'Roles') rows = rows.flatMap(r => { const l = lireRoles(r.Role); return l.length ? l.map(x => ({ ...r, Role: x })) : [{ ...r, Role: '' }]; });
   for (const r of rows) for (const k of Object.keys(r)) {
     if (garder.includes(k) || !Array.isArray(r[k])) continue;
     r[k] = r[k][0] === 'L' ? r[k].slice(1).join(', ') : '';
@@ -1382,33 +1391,43 @@ async function typeColonneRole() {
 }
 async function signalerRolesMultiples() {
   const zone = $('#r-multi'); if (!zone) return;
-  let type = null; try { type = await typeColonneRole(); } catch (e) { return; }
-  if (type !== 'ChoiceList') return;
-  const brut = enLignes(await grist.docApi.fetchTable('Roles'));
-  const multiples = brut.filter(r => liste(r.Role).length > 1);
-  zone.innerHTML = `<div class="alerte orange" style="cursor:default;margin-top:10px;display:block">
-      La colonne <b>Role</b> est en « Choix multiple ». ${multiples.length} ligne(s) portent plusieurs rôles.
-      Le bouton ci-dessous crée une ligne par rôle (en recopiant année, école, circo, groupe, cycle…), puis repasse la colonne en « Choix » simple.</div>
-    <button class="btn primaire" id="r-eclater">Une ligne par rôle</button>`;
-  $('#r-eclater').onclick = () => eclaterRoles(brut, multiples);
+  try {
+    const type = await typeColonneRole();
+    if (!type) { zone.innerHTML = '<p class="ko petit">Colonne Role introuvable dans la table Roles.</p>'; return; }
+    const brut = enLignes(await grist.docApi.fetchTable('Roles'));
+    const aCorriger = brut.filter(r => { const l = lireRoles(r.Role); return l.length > 1 || (l.length === 1 && r.Role !== l[0]); });
+    const nomType = { Choice: 'Choix', ChoiceList: 'Choix multiple', Text: 'Texte' }[type] || type;
+    if (type === 'Choice' && !aCorriger.length) {
+      zone.innerHTML = `<p class="ok petit" style="margin-top:8px">Colonne Role : type « Choix », une valeur par ligne ✔</p>`; return;
+    }
+    zone.innerHTML = `<div class="alerte orange" style="cursor:default;margin-top:10px;display:block">
+        Colonne <b>Role</b> : type « ${esc(nomType)} »${aCorriger.length ? `, <b>${aCorriger.length}</b> ligne(s) à corriger (plusieurs rôles ou valeur mal formée, ex. « ${esc(Array.isArray(aCorriger[0].Role) ? lireRoles(aCorriger[0].Role).join(', ') : String(aCorriger[0].Role))} »)` : ''}.
+        Le bouton crée une ligne par rôle (en recopiant année, école, circo, groupe, cycle…) et met la colonne en « Choix » simple.</div>
+      <button class="btn primaire" id="r-eclater">Une ligne par rôle</button>`;
+    $('#r-eclater').onclick = () => eclaterRoles(brut, aCorriger, type);
+  } catch (e) {
+    zone.innerHTML = `<p class="ko petit">Vérification de la colonne Role impossible : ${esc(e.message || e)}</p>`;
+  }
 }
-async function eclaterRoles(brut, multiples) {
-  const nbNouv = multiples.reduce((n, r) => n + liste(r.Role).length - 1, 0);
-  const ok = await modale('Une ligne par rôle', `<p>${multiples.length} ligne(s) seront éclatées : <b>${nbNouv}</b> ligne(s) de rôle ajoutée(s), puis la colonne Role repassera en « Choix » simple.</p>
+async function eclaterRoles(brut, aCorriger, type) {
+  const nbNouv = aCorriger.reduce((n, r) => n + Math.max(lireRoles(r.Role).length - 1, 0), 0);
+  const ok = await modale('Une ligne par rôle', `<p>${aCorriger.length} ligne(s) corrigée(s), <b>${nbNouv}</b> ligne(s) de rôle ajoutée(s)${type !== 'Choice' ? ', puis la colonne Role passera en « Choix » simple' : ''}.</p>
     <p class="muted petit">Exemple : « PEMF, CPC, Candidat CAFIPEMF » → 3 lignes. Aucune donnée n'est supprimée ; Ctrl+Z dans Grist annule si besoin.</p>`,
-    [{ label: 'Annuler', valeur: false }, { label: 'Éclater et convertir', primaire: true, valeur: true }]);
+    [{ label: 'Annuler', valeur: false }, { label: 'Corriger', primaire: true, valeur: true }]);
   if (!ok) return;
   const copier = ['Personne', 'Annee', 'Ecole', 'Circo_saisie', 'Cycle', 'Groupe', 'Modalite', 'Decharge', 'Detail'];
-  // 1. Colonne en « Choix » (en gardant tous les choix existants) ; 2. réécriture explicite des valeurs,
-  // car la conversion automatique de Grist produirait « ('PEMF',) » ; 3. une ligne de plus par rôle supplémentaire.
-  const choix = [...new Set([...ROLES, ...brut.flatMap(r => liste(r.Role))])];
-  const actions = [['ModifyColumn', 'Roles', 'Role', { type: 'Choice', widgetOptions: JSON.stringify({ choices: choix }) }],
-    ['BulkUpdateRecord', 'Roles', brut.map(r => r.id), { Role: brut.map(r => liste(r.Role)[0] || (typeof r.Role === 'string' ? r.Role : '')) }]];
-  for (const r of multiples) for (const x of liste(r.Role).slice(1)) {
+  // Type d'abord (en gardant tous les choix existants), puis réécriture explicite des valeurs :
+  // la conversion automatique de Grist produirait « ('PEMF',) ».
+  const choix = [...new Set([...ROLES, ...brut.flatMap(r => lireRoles(r.Role))])];
+  const actions = [];
+  if (type !== 'Choice') actions.push(['ModifyColumn', 'Roles', 'Role', { type: 'Choice', widgetOptions: JSON.stringify({ choices: choix }) }]);
+  const cibles = type !== 'Choice' ? brut : aCorriger;
+  if (cibles.length) actions.push(['BulkUpdateRecord', 'Roles', cibles.map(r => r.id), { Role: cibles.map(r => lireRoles(r.Role)[0] || '') }]);
+  for (const r of aCorriger) for (const x of lireRoles(r.Role).slice(1)) {
     const f = { Role: x }; for (const k of copier) if (r[k] != null && r[k] !== '') f[k] = r[k];
     actions.push(['AddRecord', 'Roles', null, f]);
   }
-  try { await agir(actions, `${nbNouv} rôle(s) ajouté(s), colonne Role en « Choix »`); rendre(); }
+  try { await agir(actions, `${nbNouv} rôle(s) ajouté(s), colonne Role corrigée`); rendre(); }
   catch (e) { modale('Erreur', `<p class="ko">${esc(e.message || e)}</p>`); }
 }
 function nomCourtCirco(nom) {
