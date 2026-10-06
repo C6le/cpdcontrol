@@ -201,7 +201,7 @@ const SCHEMA = [
       C('Corps', 'Text'), C('Notes', 'Text')] },
   { t: 'Envois', cols: [C('Date', 'DateTime:Europe/Paris'), C('Lot', 'Text'), C('Type', 'Choice', { ch: ['Mail', 'Document'] }),
       C('Modele', 'Ref:Modeles'), C('Personne', 'Ref:Personnes'), C('Destinataire', 'Text'), C('Objet', 'Text'),
-      C('Statut', 'Choice', { ch: ['En file', 'Envoyé', 'Généré', 'Erreur', 'Test'] }), C('Message', 'Text')] },
+      C('Statut', 'Choice', { ch: ['En file', 'Envoyé', 'Généré', 'Erreur', 'Test', 'Exporté'] }), C('Message', 'Text')] },
 ];
 // Phase 2 : colonnes calculées qui pointent vers des tables créées plus loin.
 const SCHEMA_TARDIF = [
@@ -1129,6 +1129,12 @@ function rendreListes() {
           <button class="btn" id="l-pdf" ${L.modeleDoc && choisis.length ? '' : 'disabled'}>Générer via n8n</button></div>
         <div class="barre petit"><label class="chk"><input type="checkbox" id="l-pdf-nc" ${L.pdfNextcloud ? 'checked' : ''}> déposer dans Nextcloud</label>
           <label class="chk"><input type="checkbox" id="l-pdf-mail" ${L.pdfMail ? 'checked' : ''}> envoyer en pièce jointe (avec le modèle de mail ci-dessus)</label></div>
+        <h3>Thunderbird (Mail Merge) — sans n8n</h3>
+        <div class="barre petit"><label class="chk"><input type="checkbox" id="l-tb-pdf" ${L.tbPdf && L.modeleDoc ? 'checked' : ''} ${L.modeleDoc ? '' : 'disabled'}> joindre à chaque mail le PDF du modèle de document ci-dessus</label></div>
+        <div class="barre petit"><label>ou pièce jointe déjà prête (nom du fichier) <input type="text" id="l-tb-fichier" size="34" value="${esc(L.tbFichier || '')}" placeholder="ex. Convention - {{Nom}} {{Prenom}}.pdf" ${L.tbPdf && L.modeleDoc ? 'disabled' : ''}></label></div>
+        <div class="barre"><button class="btn primaire" id="l-tb" ${choisis.length ? '' : 'disabled'}>Préparer pour Thunderbird (${choisis.length})</button>
+          <span class="petit muted" id="l-tb-etat"></span></div>
+        <p class="petit muted">Télécharge un ZIP : <b>destinataires.xlsx</b> (une ligne par personne, une colonne par champ <code>{{…}}</code>), <b>modele.eml</b> (le modèle de mail choisi, à ouvrir dans Thunderbird), les <b>PDF</b> à joindre le cas échéant et un mode d'emploi.</p>
         <h3>Aperçu ${choisis.length ? '(1er destinataire)' : ''}</h3>
         <div id="l-apercu" class="apercu"><span class="muted">Choisissez un modèle.</span></div>
         <p class="petit muted">Champs disponibles : ${CHAMPS_FUSION.map(c => `<code>{{${c}}}</code>`).join(' ')}</p>
@@ -1153,6 +1159,9 @@ function rendreListes() {
   $('#l-envoyer').onclick = () => envoyerMails(choisis, false);
   $('#l-imprimer').onclick = () => imprimer(choisis);
   $('#l-pdf').onclick = () => genererPdf(choisis);
+  $('#l-tb-pdf').onchange = e => { L.tbPdf = e.target.checked; rendreListes(); };
+  $('#l-tb-fichier').onchange = e => { L.tbFichier = e.target.value.trim(); };
+  $('#l-tb').onclick = () => { L.tbFichier = $('#l-tb-fichier').value.trim(); exporterThunderbird(choisis); };
   const mId = +(L.modele || L.modeleDoc);
   if (mId && choisis.length) {
     const m = IDX.Modeles.get(mId); const ctx = contexteFusion(choisis[0]);
@@ -1224,6 +1233,109 @@ async function envoyerMails(rows, test) {
     modale('Échec de l\'envoi', `<p class="ko">${esc(e.message || e)}</p><p class="muted">Vérifiez que le workflow n8n est actif et que l'URL est celle de « Production ».</p>`);
   }
   await charger(); rendre();
+}
+/* --- Préparation d'un publipostage pour Thunderbird + Mail Merge (sans n8n) --- */
+const LIBS = {
+  xlsx: 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+  jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  html2pdf: 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js',
+};
+function chargerScript(url) {
+  if (document.querySelector(`script[src="${url}"]`)) return Promise.resolve();
+  return new Promise((ok, ko) => { const sc = document.createElement('script'); sc.src = url; sc.onload = ok; sc.onerror = () => ko(new Error('Chargement impossible : ' + url)); document.head.appendChild(sc); });
+}
+const nomFichierSur = n => String(n || '').replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 150);
+const b64 = str => { const o = new TextEncoder().encode(str); let bin = ''; for (let i = 0; i < o.length; i += 0x8000) bin += String.fromCharCode.apply(null, o.subarray(i, i + 0x8000)); return btoa(bin); };
+const b64Lignes = str => b64(str).replace(/.{76}/g, '$&\r\n');
+// Modèle de mail au format .eml : les champs {{…}} sont laissés tels quels pour Mail Merge.
+function emlModele(m) {
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${corpsHtml(m.Corps)}</body></html>`;
+  return ['To: {{Mail}}', `Subject: =?UTF-8?B?${b64(m.Objet || m.Nom || '')}?=`, ...(param('MAIL_CPD') ? [`Reply-To: ${param('MAIL_CPD')}`] : []),
+    'MIME-Version: 1.0', 'X-Unsent: 1', 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64Lignes(html), ''].join('\r\n');
+}
+async function pdfDepuisHtml(html) {
+  // html2pdf crée lui-même son conteneur de rendu (un élément placé hors écran donnerait une page blanche).
+  const page = `<div style="width:170mm;font-family:Arial,sans-serif;font-size:11pt;line-height:1.5;color:#111;background:#fff">${html}</div>`;
+  return html2pdf().set({ margin: 20, image: { type: 'jpeg', quality: 0.95 }, html2canvas: { scale: 2, backgroundColor: '#ffffff' }, jsPDF: { unit: 'mm', format: 'a4' } }).from(page, 'string').outputPdf('blob');
+}
+async function exporterThunderbird(rows) {
+  const L = S.listes; const etat = $('#l-tb-etat');
+  const mMail = IDX.Modeles.get(+L.modele), mDoc = L.tbPdf ? IDX.Modeles.get(+L.modeleDoc) : null;
+  const avecMail = rows.filter(r => (P(r.Personne) || {}).Mail);
+  if (!avecMail.length) { modale('Aucun destinataire', '<p>Aucune des personnes sélectionnées n\'a d\'adresse mail.</p>'); return; }
+  try {
+    etat.textContent = 'Chargement des outils…';
+    await chargerScript(LIBS.xlsx); await chargerScript(LIBS.jszip); if (mDoc) await chargerScript(LIBS.html2pdf);
+    const zip = new JSZip(); const dossierPJ = 'pieces-jointes';
+    const lignes = []; let n = 0;
+    for (const r of avecMail) {
+      const ctx = contexteFusion(r); const ligne = {};
+      for (const c of CHAMPS_FUSION) ligne[c] = String(ctx[c] ?? '').replace(/\n/g, ' ; ');
+      if (mMail) ligne.Objet = fusion(mMail.Objet, ctx, false);
+      if (mDoc) {
+        const titre = fusion(mDoc.Objet || mDoc.Nom, ctx, false);
+        ligne.Fichier = nomFichierSur((titre.includes(ctx.Nom_complet) ? titre : `${titre} - ${ctx.Nom_complet}`)) + '.pdf';
+        etat.textContent = `PDF ${++n} / ${avecMail.length}…`;
+        zip.file(`${dossierPJ}/${ligne.Fichier}`, await pdfDepuisHtml(fusion(corpsHtml(mDoc.Corps), ctx, true)));
+      } else if (L.tbFichier) ligne.Fichier = nomFichierSur(fusion(L.tbFichier, ctx, false));
+      lignes.push(ligne);
+    }
+    etat.textContent = 'Création du fichier Excel…';
+    const entetes = ['Mail', ...CHAMPS_FUSION.filter(c => c !== 'Mail'), ...(mMail ? ['Objet'] : []), ...(lignes.some(l => l.Fichier) ? ['Fichier'] : [])];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(lignes, { header: entetes });
+    ws['!cols'] = entetes.map(h => ({ wch: Math.min(45, Math.max(h.length + 2, ...lignes.map(l => String(l[h] || '').length).slice(0, 50))) }));
+    XLSX.utils.book_append_sheet(wb, ws, 'Destinataires');
+    zip.file('destinataires.xlsx', XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
+    if (mMail) zip.file('modele.eml', emlModele(mMail));
+    zip.file('LISEZMOI.txt', modeEmploiThunderbird(!!mMail, lignes.some(l => l.Fichier), !!mDoc, lignes.length).replace(/\n/g, '\r\n'));
+    const lot = 'TB-' + new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `publipostage-thunderbird-${lot.slice(3, 11)}.zip`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    // Trace dans la table Envois
+    const now = Date.now() / 1000;
+    await grist.docApi.applyUserActions([['BulkAddRecord', 'Envois', lignes.map(() => null), {
+      Date: lignes.map(() => now), Lot: lignes.map(() => lot), Type: lignes.map(() => 'Mail'), Modele: lignes.map(() => mMail ? mMail.id : 0),
+      Personne: avecMail.map(r => r.Personne), Destinataire: lignes.map(l => l.Mail), Objet: lignes.map(l => l.Objet || ''),
+      Statut: lignes.map(() => 'Exporté'), Message: lignes.map(l => 'Préparé pour Thunderbird' + (l.Fichier ? ' – PJ : ' + l.Fichier : '')) }]]);
+    await charger();
+    etat.textContent = '';
+    toast(`ZIP prêt : ${lignes.length} destinataire(s)${rows.length > avecMail.length ? `, ${rows.length - avecMail.length} sans mail ignoré(s)` : ''}`, 5000);
+  } catch (e) { console.error(e); etat.innerHTML = `<span class="ko">${esc(e.message || e)}</span>`; }
+}
+function modeEmploiThunderbird(avecModele, avecPJ, pdfGeneres, n) {
+  return `PUBLIPOSTAGE THUNDERBIRD – MODE D'EMPLOI (${n} destinataire(s))
+==========================================================
+
+Prérequis : Thunderbird avec le module « Mail Merge » (Outils > Modules complémentaires).
+
+1. Extraire ce ZIP dans un dossier (clic droit > Extraire tout).
+
+2. Préparer le message modèle
+${avecModele ? `   - Thunderbird : Fichier > Ouvrir > Message enregistré… > choisir « modele.eml ».
+   - Dans le message ouvert : Message > Modifier en tant que nouveau message (Ctrl+E).
+   - Vérifier : Pour = {{Mail}}, l'objet et le texte contiennent des champs {{…}}.
+     Vous pouvez modifier le texte ; les champs disponibles sont les titres de colonnes
+     de destinataires.xlsx ({{Prenom}}, {{Ecole}}, {{IEN}}, {{Encadrants}}…).` : `   - Créer un nouveau message. Dans « Pour », écrire : {{Mail}}
+   - Rédiger l'objet et le texte avec les champs {{…}} = titres de colonnes de
+     destinataires.xlsx ({{Prenom}}, {{Ecole}}, {{IEN}}…).`}
+   - Une pièce jointe commune à tous peut être ajoutée normalement au message.
+
+3. Lancer Mail Merge : Outils > Mail Merge (ou le bouton « Mail Merge »)
+   - Source : XLSX, puis « Parcourir » > destinataires.xlsx (feuille « Destinataires »).
+${avecPJ ? `   - Pièces jointes : cocher, écrire {{Fichier}}, puis « Parcourir » et sélectionner
+     TOUS les fichiers ${pdfGeneres ? 'du dossier « pieces-jointes »' : 'à joindre (ils doivent porter exactement les noms de la colonne Fichier)'} (Ctrl+A).
+` : ''}   - Mode de livraison : « Envoyer plus tard » (recommandé).
+   - Cliquer sur « Envoyer ».
+
+4. Vérifier quelques messages dans « Dossiers locaux > Boîte d'envoi »,
+   puis Fichier > Envoyer les messages en attente.
+
+Remarques
+- Les champs sur plusieurs lignes (Encadrants, Etudiants) sont séparés par « ; ».
+- Ne pas renommer les colonnes du fichier Excel : ce sont les noms des champs.
+`;
 }
 function documentsHtml(rows) {
   const m = IDX.Modeles.get(+S.listes.modeleDoc);
