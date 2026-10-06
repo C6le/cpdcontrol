@@ -176,7 +176,10 @@ const SCHEMA = [
       C('Mail_pro', 'Text'), C('Mail_perso', 'Text'), C('Telephone', 'Text'), C('Num_etudiant', 'Text'), C('Fonction', 'Text'),
       C('Ecole', 'Ref:Ecoles'), C('Notes', 'Text'),
       C('Nom_complet', 'Text', { f: '" ".join(x for x in [($Nom or "").upper(), $Prenom] if x)' }),
-      C('Mail', 'Text', { f: '$Mail_pro or $Mail_perso' })] },
+      C('Mail', 'Text', { f: '$Mail_pro or $Mail_perso' }),
+      C('Cle_nom', 'Text', { f: 'import re, unicodedata\ns = unicodedata.normalize("NFD", "%s %s" % ($Nom or "", $Prenom or ""))\ns = "".join(c for c in s if not unicodedata.combining(c)).lower()\nreturn " ".join(sorted(w for w in re.split(r"[^a-z0-9]+", s) if w))' }),
+      C('Cle', 'Text', { f: '($Mail_pro or $Mail_perso or "").strip().lower() or $Cle_nom' }),
+      C('Doublon', 'Text', { f: 'if $Cle and len(Personnes.lookupRecords(Cle=$Cle)) > 1:\n  return "doublon"\nif $Cle_nom and len(Personnes.lookupRecords(Cle_nom=$Cle_nom)) > 1:\n  return "homonyme ?"\nreturn ""' })] },
   { t: 'Roles', cols: [C('Personne', 'Ref:Personnes'), C('Role', 'Choice', { ch: ROLES }), C('Annee', 'Ref:Annees'),
       C('Ecole', 'Ref:Ecoles'), C('Circo_saisie', 'Ref:Circonscriptions'), C('Cycle', 'ChoiceList', { ch: ['1', '2', '3'] }),
       C('Groupe', 'Text'), C('Modalite', 'Text'), C('Decharge', 'Text'), C('Detail', 'Text'),
@@ -544,6 +547,86 @@ function conflitsAlternance(suivis) {
   }
   return [...ids];
 }
+/* --- Doublons : regroupement et fusion --- */
+function groupesDoublons() {
+  // Union des personnes partageant un mail (pro ou perso) ou la même clé nom + prénom.
+  const parent = new Map(); const f = x => { while (parent.get(x) !== x) x = parent.get(x); return x; };
+  const unir = (a, b) => parent.set(f(a), f(b));
+  for (const p of D.Personnes) parent.set(p.id, p.id);
+  const vus = new Map();
+  for (const p of D.Personnes) for (const k of [cleMail(p.Mail_pro), cleMail(p.Mail_perso), 'nom:' + cleNom(p.Nom, p.Prenom)]) {
+    if (!k || k === 'nom:') continue; if (vus.has(k)) unir(p.id, vus.get(k)); else vus.set(k, p.id);
+  }
+  const g = new Map(); for (const p of D.Personnes) { const r = f(p.id); if (!g.has(r)) g.set(r, []); g.get(r).push(p.id); }
+  return [...g.values()].filter(ids => ids.length > 1).map(ids => {
+    const mails = new Set(ids.flatMap(id => [P(id).Mail_pro, P(id).Mail_perso].map(cleMail).filter(Boolean)));
+    const parMail = ids.some((id, i) => ids.slice(i + 1).some(j => [P(id).Mail_pro, P(id).Mail_perso].map(cleMail).filter(Boolean).some(m => [P(j).Mail_pro, P(j).Mail_perso].map(cleMail).includes(m))));
+    // Même nom mais chacun son mail : homonymes probables, fusion seulement sur demande explicite.
+    const homonymes = !parMail && ids.filter(id => P(id).Mail_pro || P(id).Mail_perso).length > 1 && mails.size > 1;
+    return { ids: ids.sort((a, b) => a - b), parMail, homonymes };
+  });
+}
+function ouvrirDoublons() {
+  const groupes = groupesDoublons();
+  const sures = groupes.filter(g => !g.homonymes);
+  const ligne = g => `<tr><td>${g.homonymes ? '<span class="warn">homonymes ?</span>' : g.parMail ? 'même mail' : 'même nom'}</td>
+    <td>${g.ids.map(id => { const p = P(id); return `${lienP(id)} <span class="muted petit">${esc(p.Mail || 'sans mail')} · ${rolesDe(id).map(r => r.Role).join(', ') || '—'}</span>`; }).join('<br>')}</td>
+    <td><button class="btn petit" data-fusion="${g.ids.join(',')}">Fusionner</button></td></tr>`;
+  modale(`${groupes.length} groupe(s) de doublons`, groupes.length ? `<p class="petit muted">La fusion garde la fiche la plus ancienne, la complète avec les informations des autres (champs vides seulement, notes ajoutées bout à bout), y rattache tous les rôles, suivis, événements, actions et envois, puis supprime les fiches en trop. Ctrl+Z dans Grist annule.</p>
+    ${sures.length > 1 ? `<p><button class="btn primaire" data-fusion-tout="1">Fusionner les ${sures.length} groupes « même mail / même nom »</button></p>` : ''}
+    <div class="scroll-table"><table class="t"><tr><th>Motif</th><th>Fiches</th><th></th></tr>${groupes.map(ligne).join('')}</table></div>` : '<p class="ok">Aucun doublon.</p>');
+  document.querySelectorAll('[data-fusion]').forEach(b => b.onclick = async () => { $('#voile').classList.remove('ouvert'); await fusionner([b.dataset.fusion.split(',').map(Number)]); ouvrirDoublons(); });
+  const tout = document.querySelector('[data-fusion-tout]');
+  if (tout) tout.onclick = async () => { $('#voile').classList.remove('ouvert'); await fusionner(sures.map(g => g.ids)); ouvrirDoublons(); };
+}
+async function fusionner(groupes) {
+  const actions = [], aSupprimer = [];
+  const remplace = new Map(); // id doublon → id conservé
+  for (const ids of groupes) { const [garde, ...autres] = [...ids].sort((a, b) => a - b); for (const a of autres) remplace.set(a, garde); }
+  if (!remplace.size) return;
+  // 1. Compléter les fiches conservées
+  for (const ids of groupes) {
+    const [garde, ...autres] = [...ids].sort((a, b) => a - b); const g = P(garde); const maj = {};
+    for (const a of autres.map(P)) {
+      for (const k of ['Civilite', 'Telephone', 'Num_etudiant', 'Fonction', 'Ecole']) if (a[k] && !g[k] && !maj[k]) maj[k] = a[k];
+      // Mails : on ne recopie qu'une adresse réellement nouvelle, d'abord en pro puis en perso.
+      const connus = () => [g.Mail_pro, g.Mail_perso, maj.Mail_pro, maj.Mail_perso].map(cleMail).filter(Boolean);
+      for (const m of [a.Mail_pro, a.Mail_perso].map(x => String(x || '').trim()).filter(Boolean)) {
+        if (connus().includes(cleMail(m))) continue;
+        if (!g.Mail_pro && !maj.Mail_pro) maj.Mail_pro = m; else if (!g.Mail_perso && !maj.Mail_perso) maj.Mail_perso = m;
+      }
+      if (a.Notes && !String(g.Notes || '').includes(a.Notes)) maj.Notes = [maj.Notes || g.Notes, a.Notes].filter(Boolean).join('\n');
+    }
+    if (Object.keys(maj).length) actions.push(['UpdateRecord', 'Personnes', garde, maj]);
+    aSupprimer.push(...autres);
+  }
+  const r = id => remplace.get(id) || id;
+  // 2. Re-rattacher les références simples
+  const refs = [['Roles', 'Personne'], ['Suivis', 'Etudiant'], ['Suivis', 'Encadrant'], ['Actions', 'En_attente_de'], ['Envois', 'Personne']];
+  for (const [t, c] of refs) {
+    const lignes = [...new Map(D[t].filter(x => remplace.has(x[c])).map(x => [x.id, x])).values()];
+    if (lignes.length) actions.push(['BulkUpdateRecord', t, lignes.map(x => x.id), { [c]: lignes.map(x => r(x[c])) }]);
+  }
+  // 3. Listes de références
+  for (const [t, c] of [['Evenements', 'Participants'], ['Actions', 'Concerne']]) {
+    const lignes = D[t].filter(x => liste(x[c]).some(id => remplace.has(id)));
+    if (lignes.length) actions.push(['BulkUpdateRecord', t, lignes.map(x => x.id), { [c]: lignes.map(x => ['L', ...new Set(liste(x[c]).map(r))]) }]);
+  }
+  // 4. Rôles et suivis devenus identiques après fusion
+  const vusR = new Set(), dupR = [];
+  for (const x of [...new Map(D.Roles.map(y => [y.id, y])).values()].sort((a, b) => a.id - b.id)) {
+    const k = `${r(x.Personne)}|${x.Role}|${x.Annee}`; if (vusR.has(k)) dupR.push(x.id); else vusR.add(k);
+  }
+  const vusS = new Set(), dupS = [];
+  for (const x of [...D.Suivis].sort((a, b) => a.id - b.id)) {
+    const k = `${r(x.Etudiant)}|${r(x.Encadrant)}|${x.Type}|${x.Fenetre || ''}|${x.Annee}`; if (vusS.has(k)) dupS.push(x.id); else vusS.add(k);
+  }
+  if (dupR.length) actions.push(['BulkRemoveRecord', 'Roles', dupR]);
+  if (dupS.length) actions.push(['BulkRemoveRecord', 'Suivis', dupS]);
+  actions.push(['BulkRemoveRecord', 'Personnes', aSupprimer]);
+  try { await agir(actions, `${aSupprimer.length} fiche(s) fusionnée(s)`); if (S.selection && remplace.has(S.selection.id)) S.selection.id = remplace.get(S.selection.id); rendre(); }
+  catch (e) { modale('Erreur de fusion', `<p class="ko">${esc(e.message || e)}</p>`); }
+}
 function calculerAlertes() {
   const A = S.annee, auj = aujourdhui();
   const rolesAnnee = D.Roles.filter(r => r.Annee === A);
@@ -551,8 +634,6 @@ function calculerAlertes() {
   const suivisAnnee = D.Suivis.filter(s => s.Annee === A && s.Statut !== 'Annulé');
   const avecSuivi = new Set(suivisAnnee.map(s => s.Etudiant));
   const encadres = new Set(suivisAnnee.map(s => s.Encadrant));
-  const nomsVus = new Map();
-  for (const p of D.Personnes) { const k = cleNom(p.Nom, p.Prenom); if (!k) continue; nomsVus.set(k, [...(nomsVus.get(k) || []), p.id]); }
   const al = [
     { cle: 'sansSuivi', niveau: 'rouge', label: 'étudiants / stagiaires sans encadrant', ids: [...new Set(etudiants.filter(r => !avecSuivi.has(r.Personne)).map(r => r.Personne))] },
     { cle: 'sansIEN', niveau: 'rouge', label: 'circonscriptions sans IEN cette année', circos: D.Circonscriptions.filter(c => !ienDe(c.id)).map(c => c.id) },
@@ -565,9 +646,9 @@ function calculerAlertes() {
     { cle: 'alternantsSansJour', niveau: 'orange', label: 'alternants dont le jour de remplacement n\'est pas renseigné',
       ids: [...new Set(suivisAnnee.filter(s => s.Type === 'Tutorat alternant' && !liste(s.Jours).length).map(s => s.Etudiant))] },
     { cle: 'conflitsJours', niveau: 'rouge', label: 'tuteurs remplacés par plusieurs alternants le même jour', ids: conflitsAlternance(suivisAnnee) },
-    { cle: 'doublons', niveau: 'orange', label: 'doublons potentiels (même nom)', ids: [...nomsVus.values()].filter(v => v.length > 1).flat() },
+    { cle: 'doublons', niveau: 'orange', label: 'doublons (même mail ou même nom)', groupes: groupesDoublons() },
   ];
-  for (const a of al) a.n = (a.ids || a.circos || a.actions || a.envois || []).length;
+  for (const a of al) a.n = (a.ids || a.circos || a.actions || a.envois || (a.groupes || []).flatMap(g => g.ids)).length;
   return al;
 }
 function rendreTableau() {
@@ -627,6 +708,7 @@ function filtresTableau() {
 }
 function memoriserTableau(F) { try { localStorage.setItem('cpd-dash', JSON.stringify(F)); } catch (e) { /* ignoré */ } }
 function ouvrirAlerte(a) {
+  if (a.groupes) { ouvrirDoublons(); return; }
   let corps = '';
   if (a.ids) corps = `<table class="t"><tr><th>Personne</th><th>Rôles</th><th>Mail</th></tr>${a.ids.map(id => { const p = P(id) || {}; return `<tr><td>${lienP(id)}</td><td>${rolesDe(id).map(r => `<span class="badge role">${esc(r.Role)}</span>`).join('')}</td><td>${esc(p.Mail || '')}</td></tr>`; }).join('')}</table>`;
   if (a.circos) corps = `<ul class="simple">${a.circos.map(id => `<li>${lienC(id)}</li>`).join('')}</ul><p class="muted petit">Ajoutez un rôle « IEN » (année courante, circonscription renseignée) dans la fiche de l'inspecteur·rice.</p>`;
@@ -1244,10 +1326,23 @@ function trouverCirco(texte) {
     || D.Circonscriptions.find(x => norm(x.Nom).endsWith(' ' + n));
   return c ? c.id : null;
 }
+const cleMail = m => String(m || '').trim().toLowerCase();
+// Clé primaire : le mail (pro ou perso) ; à défaut nom + prénom (ordre, accents, tirets et casse indifférents) ;
+// en dernier recours un nom « approchant » (nom composé, 2e prénom) s'il ne désigne qu'une seule personne.
 function trouverPersonne(nom, prenom, mails = []) {
-  for (const m of mails) { if (!m) continue; const p = IDX.personnesParMail.get(String(m).trim().toLowerCase()); if (p) return p.id; }
-  const k = cleNom(nom, prenom); const l = IDX.personnesParNom.get(k);
-  return l && l.length ? l[0].id : null;
+  for (const m of mails) { if (!m) continue; const p = IDX.personnesParMail.get(cleMail(m)); if (p) return { id: p.id, par: 'mail' }; }
+  const k = cleNom(nom, prenom); if (!k) return null;
+  const l = IDX.personnesParNom.get(k);
+  if (l && l.length) {
+    // Même nom mais mails différents des deux côtés : homonymes, pas la même personne.
+    const avecMail = mails.filter(Boolean).length && l.every(p => p.Mail_pro || p.Mail_perso);
+    if (!avecMail) return { id: l[0].id, par: 'nom' };
+  }
+  const mots = k.split(' ');
+  if (mots.length < 2 || mails.filter(Boolean).length) return null;
+  const candidats = D.Personnes.filter(p => { const pk = cleNom(p.Nom, p.Prenom).split(' '); if (pk.length < 2) return false;
+    const [court, long] = mots.length <= pk.length ? [mots, pk] : [pk, mots]; return court.every(w => long.includes(w)); });
+  return candidats.length === 1 ? { id: candidats[0].id, par: 'nom approchant' } : null;
 }
 function rendreImport() {
   if (!S.imp) S.imp = { cible: 'personnes', texte: '', role: 'PEMF', roleEnc: 'MAT', roleEtu: 'M2E1', type: 'Stage massé', fenetre: '', categorie: 'Réunion', mapping: null, entetes: null, apercu: null };
@@ -1319,12 +1414,18 @@ function preparerImport() {
   }
   // Personnes (et suivis) : registre des personnes à créer dans ce lot pour éviter les doublons internes.
   const nouvelles = new Map();
+  // Nouvelles personnes du lot, indexées par mail ET par nom pour ne pas les créer deux fois.
+  const lotParMail = new Map(), lotParNom = new Map();
   const resoudre = (nom, prenom, mails, extra) => {
-    const id = trouverPersonne(nom, prenom, mails);
-    if (id) return { id, existe: true };
-    const k = cleNom(nom, prenom) || (mails[0] || '').toLowerCase();
-    if (!nouvelles.has(k)) nouvelles.set(k, { tmp: 'n' + nouvelles.size, fields: { Nom: nom, Prenom: prenom, ...extra } });
-    return { tmp: nouvelles.get(k).tmp, existe: false };
+    const t = trouverPersonne(nom, prenom, mails);
+    if (t) return { id: t.id, existe: true, par: t.par };
+    const ms = mails.map(cleMail).filter(Boolean), kn = cleNom(nom, prenom);
+    let n = ms.map(m => lotParMail.get(m)).find(Boolean) || (kn && lotParNom.get(kn) && !(ms.length && lotParNom.get(kn).mails.length && !ms.some(m => lotParNom.get(kn).mails.includes(m))) ? lotParNom.get(kn) : null);
+    if (!n) { n = { tmp: 'n' + nouvelles.size, fields: { Nom: nom, Prenom: prenom, ...extra }, mails: [] }; nouvelles.set(n.tmp, n); }
+    else for (const [k, v] of Object.entries(extra)) if (v && !n.fields[k]) n.fields[k] = v; // complète avec les infos de la 2e ligne
+    for (const m of ms) { lotParMail.set(m, n); if (!n.mails.includes(m)) n.mails.push(m); }
+    if (kn && !lotParNom.has(kn)) lotParNom.set(kn, n);
+    return { tmp: n.tmp, existe: false, par: 'lot' };
   };
   if (I.cible === 'personnes') {
     for (const l of I.lignes) {
@@ -1337,7 +1438,9 @@ function preparerImport() {
       const pers = resoudre(nom, prenom, [o.Mail_pro, o.Mail_perso], extra);
       const role = normRole(o.Role, I.role); const cyc = lireCycles(o.Cycle);
       const dejaRole = pers.existe && rolesDe(pers.id).some(r => r.Role === role);
-      ops.push({ statut: !pers.existe ? 'nouveau' : dejaRole ? 'existant' : 'complété', pers, extra,
+      const p0 = pers.existe ? P(pers.id) : null;
+      const mailDiff = p0 && o.Mail_pro && ![p0.Mail_pro, p0.Mail_perso].map(cleMail).includes(cleMail(o.Mail_pro)) && (p0.Mail_pro || p0.Mail_perso);
+      ops.push({ statut: !pers.existe ? 'nouveau' : dejaRole ? 'existant' : 'complété', pers, extra, reconnu: pers.existe ? `reconnu par ${pers.par} : ${nomP(pers.id)}` : '', mailDiff,
         role: dejaRole ? null : { Role: role, Annee: S.annee, Ecole: 0, Circo_saisie: !ecole && circo ? circo : 0, Groupe: o.Groupe || '', Cycle: cyc.length ? ['L', ...cyc] : null, Modalite: o.Modalite || '', Decharge: o.Decharge || '', Detail: o.Detail || '' },
         resume: `${(nom || '').toUpperCase()} ${prenom} · ${role}${o.Groupe ? ' · ' + o.Groupe : ''}`,
         msg: [(o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : '', ecole ? '🏫 ' + libE(ecole) : '', o.Circo && !circo ? `circo non reconnue : « ${o.Circo} »` : ''].filter(Boolean).join(' · ') });
@@ -1363,7 +1466,7 @@ function preparerImport() {
         ops.push({ statut: doublon ? 'existant' : 'nouveau', enc, etu, encRole, etuRole, encMaj,
           suivi: doublon ? null : suiviImporte(o, enc),
           resume: (() => { const sv = suiviImporte(o, enc); return `${etuTxt} → ${en.toUpperCase()} ${ep} · ${sv.Type}${sv.Fenetre ? ' · ' + sv.Fenetre : ''}${o.Groupe ? ' · ' + o.Groupe : ''}${sv.Jours ? ' · le ' + liste(sv.Jours).join(', ') : ''}${sv.Motif ? ' (' + sv.Motif + ')' : ''}`; })(),
-          msg: [!enc.existe ? 'encadrant créé' : '', !etu.existe ? 'étudiant créé' : '', (o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : ecole ? '🏫 ' + libE(ecole) : ''].filter(Boolean).join(' · ') });
+          msg: [!enc.existe ? 'encadrant créé' : '', !etu.existe ? 'étudiant créé' : '', enc.par === 'nom approchant' ? `encadrant rapproché : ${nomP(enc.id)}` : '', etu.par === 'nom approchant' ? `étudiant rapproché : ${nomP(etu.id)}` : '', (o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : ecole ? '🏫 ' + libE(ecole) : ''].filter(Boolean).join(' · ') });
       }
     }
   }
@@ -1389,7 +1492,7 @@ function rendreApercuImport() {
     <span class="ok">${n('nouveau')} nouvelle(s) ligne(s)</span> · ${n('complété')} complétée(s) · <span class="muted">${n('existant')} déjà présente(s)</span> · <span class="ko">${n('erreur')} en erreur</span>
     ${S.imp.cible !== 'evenements' ? ` · <b>${nbNouvPers}</b> personne(s) à créer` : ''}</p>
     <div class="scroll-table"><table class="t"><tr><th>Statut</th><th>Ligne</th><th>Remarques</th></tr>
-    ${ops.map(o => `<tr><td class="${o.statut === 'erreur' ? 'ko' : o.statut === 'existant' ? 'muted' : 'ok'}">${o.statut}</td><td>${esc(o.resume)}</td><td class="petit ${/non reconnue/.test(o.msg) ? 'warn' : 'muted'}">${esc(o.msg || '')}</td></tr>`).join('')}
+    ${ops.map(o => `<tr><td class="${o.statut === 'erreur' ? 'ko' : o.statut === 'existant' ? 'muted' : 'ok'}">${o.statut}</td><td>${esc(o.resume)}</td><td class="petit ${/non reconnue|approchant/.test(o.msg + (o.reconnu || '')) || o.mailDiff ? 'warn' : 'muted'}">${esc([o.reconnu, o.mailDiff ? 'mail différent de la fiche (non modifié)' : '', o.msg].filter(Boolean).join(' · '))}</td></tr>`).join('')}
     </table></div>
     <div class="barre" style="margin-top:8px"><button class="btn primaire" id="imp-go" ${ops.some(o => o.statut === 'nouveau' || o.statut === 'complété') ? '' : 'disabled'}>Importer dans Grist</button></div>`;
   $('#imp-go').onclick = executerImport;
@@ -1448,6 +1551,7 @@ function rendreReglages() {
       <div class="carte"><h2>Structure du document</h2>
         ${manq.length ? `<p class="ko">Tables manquantes : ${manq.join(', ')}</p><button class="btn primaire" id="r-init">Créer les tables manquantes</button>` : `<p class="ok">Les ${TABLES.length} tables sont présentes.</p>`}
         <button class="btn" id="r-refs">Réparer l'affichage des références</button>
+        <button class="btn" id="r-doublons">Doublons de personnes (${groupesDoublons().length})</button>
         ${S.maj && S.maj.actions.length ? `<div style="margin-top:10px">${bandeauMaj()}</div>` : ''}
         <div id="r-multi"></div></div>
       <div class="carte" style="margin-top:12px"><h2>Année scolaire courante</h2>
@@ -1470,6 +1574,7 @@ function rendreReglages() {
   const b = (id, f) => { const el = $(id); if (el) el.onclick = f; };
   b('#r-init', initialiser);
   b('#r-refs', async () => { await reglerAffichageRefs(); toast('Références réglées'); });
+  b('#r-doublons', ouvrirDoublons);
   signalerRolesMultiples();
   b('#r-annee-ok', async () => { const id = +$('#r-annee').value; await agir([['BulkUpdateRecord', 'Annees', D.Annees.map(a => a.id), { Courante: D.Annees.map(a => a.id === id) }]], 'Année courante modifiée'); S.annee = id; remplirAnnees(); rendre(); });
   b('#r-annee-add', async () => { const der = [...D.Annees].sort((a, b) => String(a.Annee).localeCompare(String(b.Annee))).pop(); const y = der ? +String(der.Annee).slice(0, 4) + 1 : new Date().getFullYear();
