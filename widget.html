@@ -138,11 +138,21 @@
 /* =====================================================================
    1. RÉFÉRENTIELS ET SCHÉMA DU DOCUMENT
    ===================================================================== */
-const ROLES = ['PEMF', 'MAT', 'IEN', 'CPC', 'CPD', 'Directeur', 'LPE1', 'LPE2', 'M2E1', 'M2E2', 'MEEF2',
+const ROLES = ['PEMF', 'MAT', 'IEN', 'CPC', 'CPD', 'Directeur', 'Tuteur', 'LPE1', 'LPE2', 'M2E1', 'M2E2', 'MEEF2', 'MEEF2 alternant',
   'T0', 'T1', 'Candidat CAFIPEMF', 'Jury CAFIPEMF', 'Formateur', 'Partenaire', 'Autre'];
-const ROLES_ETUDIANTS = ['LPE1', 'LPE2', 'M2E1', 'M2E2', 'MEEF2', 'T0'];
-const ROLES_ENCADRANTS = ['PEMF', 'MAT'];
-const TYPES_SUIVI = ['Stage filé', 'Stage massé', 'Tutorat PEMF', 'Tutorat T0', 'Visite', 'Accompagnement'];
+const ROLES_ETUDIANTS = ['LPE1', 'LPE2', 'M2E1', 'M2E2', 'MEEF2', 'MEEF2 alternant', 'T0'];
+const ROLES_ENCADRANTS = ['PEMF', 'MAT', 'Tuteur'];
+const TYPES_SUIVI = ['Stage filé', 'Stage massé', 'Tutorat alternant', 'Tutorat PEMF', 'Tutorat T0', 'Visite', 'Accompagnement'];
+// Alternance MEEF2 à 33 % : l'alternant remplace son tuteur (PEMF, directeur, enseignant à temps partiel) les jours de décharge.
+const JOURS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi'];
+const MOTIFS = ['Décharge PEMF', 'Décharge de direction', 'Temps partiel', 'Autre décharge'];
+const lireJours = v => { const n = norm(Array.isArray(v) ? v.slice(1).join(' ') : v); return JOURS.filter(j => new RegExp('\\b' + j.slice(0, 3)).test(n)); };
+function motifPour(pid) {
+  const r = rolesDe(pid).map(x => x.Role);
+  return r.includes('PEMF') ? 'Décharge PEMF' : r.includes('Directeur') ? 'Décharge de direction' : 'Temps partiel';
+}
+// Jours de décharge déclarés dans les rôles de l'année (colonne « Décharge »).
+const joursDecharge = pid => [...new Set(rolesDe(pid).flatMap(r => lireJours(r.Decharge)))];
 const CATEGORIES = {
   'Stage': '#1f78b4', 'Formation': '#6a3d9a', 'Conseil IEN': '#b15928', 'CAFIPEMF': '#e31a1c',
   'Réunion': '#33a02c', 'Visite': '#ff7f00', 'Échéance': '#c9191e', 'Examen / jury': '#a6cee3',
@@ -174,7 +184,8 @@ const SCHEMA = [
       C('Courant', 'Bool', { f: 'bool($Annee.Courante)' })] },
   { t: 'Suivis', cols: [C('Etudiant', 'Ref:Personnes'), C('Encadrant', 'Ref:Personnes'), C('Type', 'Choice', { ch: TYPES_SUIVI }),
       C('Annee', 'Ref:Annees'), C('Fenetre', 'Text'), C('Debut', 'Date'), C('Fin', 'Date'), C('Ecole', 'Ref:Ecoles'),
-      C('Groupe', 'Text'), C('Statut', 'Choice', { ch: ['Prévu', 'En cours', 'Terminé', 'Annulé'] }), C('Notes', 'Text')] },
+      C('Groupe', 'Text'), C('Statut', 'Choice', { ch: ['Prévu', 'En cours', 'Terminé', 'Annulé'] }), C('Notes', 'Text'),
+      C('Jours', 'ChoiceList', { ch: JOURS }), C('Motif', 'Choice', { ch: MOTIFS })] },
   { t: 'Evenements', cols: [C('Titre', 'Text'), C('Categorie', 'Choice', { ch: Object.keys(CATEGORIES) }),
       C('Date_debut', 'Date'), C('Date_fin', 'Date'), C('Heure_debut', 'Text'), C('Heure_fin', 'Text'), C('Lieu', 'Text'),
       C('Publics', 'ChoiceList', { ch: ['Tous', ...ROLES] }), C('Participants', 'RefList:Personnes'),
@@ -325,6 +336,7 @@ async function charger() {
   try { const meta = await grist.docApi.fetchTable('_grist_Tables'); presentes = meta.tableId || []; }
   catch (e) { presentes = []; }
   S.manquantes = TABLES.filter(t => !presentes.includes(t));
+  try { S.maj = await calculerMajStructure(); } catch (e) { S.maj = { actions: [], libelles: [] }; }
   for (const t of TABLES) {
     if (S.manquantes.includes(t)) { D[t] = []; IDX[t] = new Map(); continue; }
     try { D[t] = normaliser(t, enLignes(await grist.docApi.fetchTable(t))); } catch (e) { D[t] = []; }
@@ -353,7 +365,7 @@ function lireRoles(v) {
   return corps.split(/\s*[,;]\s*/).map(x => x.replace(/^['"]|['"]$/g, '').trim()).filter(Boolean);
 }
 // Colonnes réellement multi-valeurs ; ailleurs, une liste Grist (['L', …]) est aplatie en texte.
-const COLONNES_LISTE = { Roles: ['Cycle'], Evenements: ['Publics', 'Participants'], Actions: ['Concerne'], Circonscriptions: ['CPC'] };
+const COLONNES_LISTE = { Roles: ['Cycle'], Suivis: ['Jours'], Evenements: ['Publics', 'Participants'], Actions: ['Concerne'], Circonscriptions: ['CPC'] };
 function normaliser(t, rows) {
   const garder = COLONNES_LISTE[t] || [];
   // Si la colonne Role est passée en « Choix multiple », une ligne à plusieurs rôles devient plusieurs rôles.
@@ -473,6 +485,37 @@ async function initialiser() {
     console.error(e); etat.innerHTML = `<span class="ko">Erreur : ${esc(e.message || e)}</span>`; bouton.disabled = false;
   }
 }
+// Colonnes et choix ajoutés au schéma depuis la création du document (ex. Jours/Motif, nouveaux rôles).
+async function calculerMajStructure() {
+  const tabs = enLignes(await grist.docApi.fetchTable('_grist_Tables'));
+  const cols = enLignes(await grist.docApi.fetchTable('_grist_Tables_column'));
+  const tableIdDe = new Map(tabs.map(t => [t.id, t.tableId]));
+  const parTable = {};
+  for (const c of cols) { const t = tableIdDe.get(c.parentId); (parTable[t] = parTable[t] || new Map()).set(c.colId, c); }
+  const actions = [], libelles = [];
+  const verifier = (t, c) => {
+    const ex = (parTable[t] || new Map()).get(c.id);
+    if (!ex) { actions.push(['AddColumn', t, c.id, infoCol(c)]); libelles.push(`colonne ${t}.${c.id}`); return; }
+    if (!c.ch || !/^Choice/.test(ex.type || '')) return;
+    let wo = {}; try { wo = JSON.parse(ex.widgetOptions || '{}'); } catch (e) { wo = {}; }
+    const manquants = c.ch.filter(x => !(wo.choices || []).includes(x));
+    if (!manquants.length) return;
+    wo.choices = [...(wo.choices || []), ...manquants];
+    actions.push(['ModifyColumn', t, c.id, { widgetOptions: JSON.stringify(wo) }]);
+    libelles.push(`choix ${t}.${c.id} : ${manquants.join(', ')}`);
+  };
+  for (const sc of SCHEMA) if (parTable[sc.t]) for (const c of sc.cols) verifier(sc.t, c);
+  for (const [t, c] of SCHEMA_TARDIF) if (parTable[t]) verifier(t, c);
+  return { actions, libelles };
+}
+async function appliquerMajStructure() {
+  if (!S.maj || !S.maj.actions.length) return;
+  try { await grist.docApi.applyUserActions(S.maj.actions); await reglerAffichageRefs(); await charger(); toast('Structure mise à jour'); rendre(); }
+  catch (e) { modale('Erreur', `<p class="ko">${esc(e.message || e)}</p>`); }
+}
+const bandeauMaj = () => S.maj && S.maj.actions.length ? `<div class="alerte orange" style="cursor:default;display:block;margin-bottom:12px">
+    Nouveautés du widget à installer dans le document : ${S.maj.libelles.map(esc).join(' · ')}.
+    <button class="btn primaire" data-maj-structure="1" style="margin-left:8px">Mettre à jour la structure</button></div>` : '';
 async function reglerAffichageRefs() {
   const tabs = enLignes(await grist.docApi.fetchTable('_grist_Tables'));
   const cols = enLignes(await grist.docApi.fetchTable('_grist_Tables_column'));
@@ -493,6 +536,14 @@ async function reglerAffichageRefs() {
 /* =====================================================================
    6. TABLEAU DE BORD
    ===================================================================== */
+function conflitsAlternance(suivis) {
+  const vu = new Map(), ids = new Set();
+  for (const s of suivis.filter(x => x.Type === 'Tutorat alternant')) for (const j of liste(s.Jours)) {
+    const k = `${s.Encadrant}|${j}`;
+    if (vu.has(k) && vu.get(k) !== s.Etudiant) { ids.add(s.Etudiant); ids.add(vu.get(k)); ids.add(s.Encadrant); } else vu.set(k, s.Etudiant);
+  }
+  return [...ids];
+}
 function calculerAlertes() {
   const A = S.annee, auj = aujourdhui();
   const rolesAnnee = D.Roles.filter(r => r.Annee === A);
@@ -511,6 +562,9 @@ function calculerAlertes() {
     { cle: 'sansMail', niveau: 'orange', label: 'personnes actives sans adresse mail', ids: [...new Set(rolesAnnee.map(r => r.Personne))].filter(id => { const p = P(id); return p && !p.Mail_pro && !p.Mail_perso; }) },
     { cle: 'sansEcole', niveau: 'orange', label: 'PEMF / MAT / directeurs sans école', ids: [...new Set(rolesAnnee.filter(r => ['PEMF', 'MAT', 'Directeur'].includes(r.Role) && !r.Ecole && !(P(r.Personne) || {}).Ecole).map(r => r.Personne))] },
     { cle: 'encadrantsLibres', niveau: 'vert', label: 'PEMF / MAT sans étudiant affecté', ids: [...new Set(rolesAnnee.filter(r => ROLES_ENCADRANTS.includes(r.Role) && !encadres.has(r.Personne)).map(r => r.Personne))] },
+    { cle: 'alternantsSansJour', niveau: 'orange', label: 'alternants dont le jour de remplacement n\'est pas renseigné',
+      ids: [...new Set(suivisAnnee.filter(s => s.Type === 'Tutorat alternant' && !liste(s.Jours).length).map(s => s.Etudiant))] },
+    { cle: 'conflitsJours', niveau: 'rouge', label: 'tuteurs remplacés par plusieurs alternants le même jour', ids: conflitsAlternance(suivisAnnee) },
     { cle: 'doublons', niveau: 'orange', label: 'doublons potentiels (même nom)', ids: [...nomsVus.values()].filter(v => v.length > 1).flat() },
   ];
   for (const a of al) a.n = (a.ids || a.circos || a.actions || a.envois || []).length;
@@ -527,7 +581,7 @@ function rendreTableau() {
       && F.cats.includes(CATEGORIES[e.Categorie] ? e.Categorie : 'Autre'))
     .sort((a, b) => a.Date_debut - b.Date_debut || String(a.Heure_debut || '').localeCompare(String(b.Heure_debut || '')));
   const actions = D.Actions.filter(a => !['Fait', 'Abandonné'].includes(a.Statut) && a.Echeance && a.Echeance <= auj + 7 * JOUR).sort((a, b) => a.Echeance - b.Echeance);
-  $('#main').innerHTML = `
+  $('#main').innerHTML = bandeauMaj() + `
     <div class="grille kpis">${kpis || '<p class="muted">Aucun rôle saisi pour cette année. Commencez par l\'onglet Import.</p>'}
       <div class="kpi" data-kpi="__ecoles"><div class="v">${D.Ecoles.length}</div><div class="l">Écoles</div></div>
       <div class="kpi" data-kpi="__circos"><div class="v">${D.Circonscriptions.length}</div><div class="l">Circonscriptions</div></div>
@@ -660,7 +714,7 @@ function fichePersonne(id) {
   const commeEnc = (IDX.suivisEncadrant.get(id) || []).filter(s => !S.annee || s.Annee === S.annee);
   const actions = D.Actions.filter(a => (a.En_attente_de === id || liste(a.Concerne).includes(id)) && !['Fait', 'Abandonné'].includes(a.Statut));
   const envois = D.Envois.filter(e => e.Personne === id).sort((a, b) => (b.Date || 0) - (a.Date || 0)).slice(0, 8);
-  const ligneSuivi = (s, autre) => `<tr><td>${lienP(autre)}</td><td>${esc(s.Type || '')}</td><td>${esc(s.Fenetre || '')}${s.Debut ? ` <span class="muted petit">${fDate(s.Debut)}→${fDate(s.Fin)}</span>` : ''}</td><td>${lienE(s.Ecole || (P(s.Encadrant) || {}).Ecole)}</td><td>${esc(s.Groupe || '')}</td></tr>`;
+  const ligneSuivi = (s, autre) => `<tr><td>${lienP(autre)}</td><td>${esc(s.Type || '')}${liste(s.Jours).length ? `<br><b>le ${esc(liste(s.Jours).join(', '))}</b>` : ''}${s.Motif ? ` <span class="muted petit">(${esc(s.Motif)})</span>` : ''}</td><td>${esc(s.Fenetre || '')}${s.Debut ? ` <span class="muted petit">${fDate(s.Debut)}→${fDate(s.Fin)}</span>` : ''}</td><td>${lienE(s.Ecole || (P(s.Encadrant) || {}).Ecole)}</td><td>${esc(s.Groupe || '')}</td></tr>`;
   const mails = [p.Mail_pro, p.Mail_perso].filter(Boolean);
   return `<div class="entete"><h2>${esc(p.Civilite ? p.Civilite + ' ' : '')}${esc(nomP(id))}</h2>
       ${rolesDe(id).map(r => `<span class="badge role">${esc(r.Role)}${r.Groupe ? ' · ' + esc(r.Groupe) : ''}</span>`).join('')}
@@ -682,7 +736,7 @@ function fichePersonne(id) {
         ${tousRoles.length ? `<table class="t"><tr><th>Année</th><th>Rôle</th><th>Détail</th></tr>${tousRoles.map(r => `<tr class="${r.Annee === S.annee ? '' : 'muted'}"><td>${esc(libA(r.Annee))}</td><td><b>${esc(r.Role)}</b></td><td>${[r.Groupe && 'Groupe ' + esc(r.Groupe), liste(r.Cycle).length && 'Cycle ' + liste(r.Cycle).join('/'), r.Modalite && esc(r.Modalite), r.Decharge && 'Décharge ' + esc(r.Decharge), r.Ecole && r.Ecole !== p.Ecole && lienE(r.Ecole), r.Circo_saisie && lienC(r.Circo_saisie), r.Detail && esc(r.Detail)].filter(Boolean).join(' · ')}</td></tr>`).join('')}</table>` : '<p class="muted">Aucun rôle.</p>'}
       </div>
     </div>
-    ${commeEtu.length || commeEnc.length || rolesDe(id).some(r => ROLES_ENCADRANTS.includes(r.Role) || ROLES_ETUDIANTS.includes(r.Role)) ? `
+    ${true ? `
       <h3>Suivis ${esc(libA(S.annee))} <button class="btn petit" data-add-suivi="${id}">+ suivi</button></h3>
       ${commeEtu.length ? `<p class="petit muted">Encadré·e par :</p><table class="t"><tr><th>Encadrant</th><th>Type</th><th>Fenêtre</th><th>École</th><th>Groupe</th></tr>${commeEtu.map(s => ligneSuivi(s, s.Encadrant)).join('')}</table>` : ''}
       ${commeEnc.length ? `<p class="petit muted">Encadre :</p><table class="t"><tr><th>Étudiant</th><th>Type</th><th>Fenêtre</th><th>École</th><th>Groupe</th></tr>${commeEnc.map(s => ligneSuivi(s, s.Etudiant)).join('')}</table>` : ''}
@@ -769,21 +823,42 @@ async function ajouterRole(pid) {
 }
 async function ajouterSuivi(pid) {
   const estEtu = rolesDe(pid).some(r => ROLES_ETUDIANTS.includes(r.Role));
-  const enc = p => rolesDe(p.id).some(r => ROLES_ENCADRANTS.includes(r.Role) || r.Role === 'Formateur');
+  const estAlternant = rolesDe(pid).some(r => r.Role === 'MEEF2 alternant');
   const etu = p => rolesDe(p.id).some(r => ROLES_ETUDIANTS.includes(r.Role));
+  const typeDefaut = estAlternant || (!estEtu && rolesDe(pid).some(r => r.Role === 'Tuteur')) ? 'Tutorat alternant' : TYPES_SUIVI[0];
   const html = `<div class="formulaire">
     <label>Étudiant·e</label><select id="s-Etu">${optionsPersonnes(estEtu ? pid : null, etu)}</select>
-    <label>Encadrant·e</label><select id="s-Enc">${optionsPersonnes(estEtu ? null : pid, enc)}</select>
-    <label>Type</label><select id="s-Type">${TYPES_SUIVI.map(t => `<option>${t}</option>`).join('')}</select>
-    <label>Fenêtre / période</label><input type="text" id="s-Fen" placeholder="Massé 1, Filé S1…">
+    <label>Encadrant·e / tuteur</label><select id="s-Enc">${optionsPersonnes(estEtu ? null : pid)}</select>
+    <label>Type</label><select id="s-Type">${TYPES_SUIVI.map(t => `<option ${t === typeDefaut ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    <label class="alt">Jour(s) de remplacement</label><span class="alt">${JOURS.map(j => `<label class="chk" style="margin-right:6px"><input type="checkbox" class="s-jour" value="${j}"> ${j}</label>`).join('')}</span>
+    <label class="alt">Motif</label><select class="alt" id="s-Motif"><option value=""></option>${MOTIFS.map(m => `<option>${m}</option>`).join('')}</select>
+    <label>Fenêtre / période</label><input type="text" id="s-Fen" placeholder="Massé 1, Filé S1, Année…">
     <label>Du / au</label><span><input type="date" id="s-Deb"> → <input type="date" id="s-Fin"></span>
     <label>École (si ≠ encadrant)</label><select id="s-Ecole">${optionsEcoles(null)}</select>
-    <label>Groupe</label><input type="text" id="s-Grp"></div>`;
-  const ok = await modale('Ajouter un suivi', html, [{ label: 'Annuler', valeur: false }, { label: 'Ajouter', primaire: true, valeur: () => ({
-    Etudiant: +val('s-Etu') || 0, Encadrant: +val('s-Enc') || 0, Type: val('s-Type'), Fenetre: val('s-Fen'),
-    Debut: lireDate(val('s-Deb')), Fin: lireDate(val('s-Fin')), Ecole: +val('s-Ecole') || 0, Groupe: val('s-Grp'), Annee: S.annee, Statut: 'Prévu' }) }]);
+    <label>Groupe</label><input type="text" id="s-Grp"></div>
+    <p class="muted petit alt">Alternance : l'alternant remplace son tuteur les jours de décharge. Jours et motif sont pré-remplis à partir de la colonne « Décharge » des rôles du tuteur ; sans dates, le remplacement couvre toute l'année scolaire.</p>`;
+  const promesse = modale('Ajouter un suivi', html, [{ label: 'Annuler', valeur: false }, { label: 'Ajouter', primaire: true, valeur: () => {
+    const jours = [...document.querySelectorAll('.s-jour:checked')].map(c => c.value);
+    return { Etudiant: +val('s-Etu') || 0, Encadrant: +val('s-Enc') || 0, Type: val('s-Type'), Fenetre: val('s-Fen'),
+      Debut: lireDate(val('s-Deb')), Fin: lireDate(val('s-Fin')), Ecole: +val('s-Ecole') || 0, Groupe: val('s-Grp'), Annee: S.annee, Statut: 'Prévu',
+      Jours: jours.length ? ['L', ...jours] : null, Motif: val('s-Motif') }; } }]);
+  // Affichage et pré-remplissage des champs propres à l'alternance
+  const majAlt = () => {
+    const alt = val('s-Type') === 'Tutorat alternant';
+    document.querySelectorAll('#modale .alt').forEach(el => { el.style.display = alt ? '' : 'none'; });
+    const tut = +val('s-Enc'); if (!alt || !tut) return;
+    const jd = joursDecharge(tut);
+    if (jd.length && !document.querySelector('.s-jour:checked')) document.querySelectorAll('.s-jour').forEach(c => { c.checked = jd.includes(c.value); });
+    if (!val('s-Motif')) $('#s-Motif').value = motifPour(tut);
+    if (!val('s-Fen')) $('#s-Fen').value = 'Année';
+  };
+  $('#s-Type').onchange = majAlt;
+  $('#s-Enc').onchange = () => { document.querySelectorAll('.s-jour').forEach(c => { c.checked = false; }); $('#s-Motif').value = ''; majAlt(); };
+  majAlt();
+  const ok = await promesse;
   if (!ok) return;
   if (!ok.Etudiant || !ok.Encadrant) { toast('Étudiant et encadrant sont obligatoires'); return; }
+  if (ok.Type !== 'Tutorat alternant') { ok.Jours = null; ok.Motif = ''; }
   await agir([['AddRecord', 'Suivis', null, ok]], 'Suivi ajouté'); rendre();
 }
 
@@ -847,7 +922,16 @@ function evenementsCalendrier() {
   }
   if (F.actions) for (const a of D.Actions) if (a.Echeance && !['Fait', 'Abandonné'].includes(a.Statut) && (!F.texte || norm(a.Titre).includes(norm(F.texte))))
     out.push({ title: '☐ ' + a.Titre, allDay: true, start: isoDate(a.Echeance), backgroundColor: '#fff', borderColor: '#c9191e', textColor: '#c9191e', extendedProps: { kind: 'action', id: a.id } });
-  if (F.suivis) for (const s of D.Suivis) if (s.Debut && s.Annee === S.annee) {
+  if (F.suivis) for (const s of D.Suivis) if (s.Annee === S.annee && liste(s.Jours).length) {
+    const an = IDX.Annees.get(s.Annee) || {};
+    const t = `Alternance · ${nomP(s.Etudiant)} remplace ${nomP(s.Encadrant)}`;
+    if (F.texte && !norm(t).includes(norm(F.texte))) continue;
+    const deb = s.Debut || an.Debut, fin = s.Fin || an.Fin;
+    out.push({ title: t, allDay: true, daysOfWeek: liste(s.Jours).map(j => JOURS.indexOf(j) + 1).filter(n => n > 0),
+      ...(deb ? { startRecur: isoDate(deb) } : {}), ...(fin ? { endRecur: isoDate(fin + JOUR) } : {}),
+      backgroundColor: '#fde7c2', borderColor: '#b34000', textColor: '#5c2600', extendedProps: { kind: 'suivi', id: s.id } });
+  }
+  if (F.suivis) for (const s of D.Suivis) if (s.Debut && s.Annee === S.annee && !liste(s.Jours).length) {
     const t = `${s.Type || 'Stage'} · ${nomP(s.Etudiant)} chez ${nomP(s.Encadrant)}`;
     if (F.texte && !norm(t).includes(norm(F.texte))) continue;
     out.push({ title: t, allDay: true, start: isoDate(s.Debut), end: isoDate((s.Fin || s.Debut) + JOUR), backgroundColor: '#d6e9f8', borderColor: '#1f78b4', textColor: '#103a5c', extendedProps: { kind: 'suivi', id: s.id } });
@@ -856,7 +940,7 @@ function evenementsCalendrier() {
 }
 function detailEvenement({ kind, id }) {
   if (kind === 'action') { const a = IDX.Actions.get(id); modale(a.Titre, `<dl class="kv"><dt>Échéance</dt><dd>${fDate(a.Echeance)}</dd><dt>Projet</dt><dd>${esc(a.Projet || '')}</dd><dt>Contexte</dt><dd>${esc(a.Contexte || '')}</dd><dt>Statut</dt><dd>${esc(a.Statut || '')}</dd><dt>Notes</dt><dd>${esc(a.Notes || '')}</dd></dl>`); return; }
-  if (kind === 'suivi') { const s = IDX.Suivis.get(id); modale(`${s.Type || 'Suivi'} – ${s.Fenetre || ''}`, `<dl class="kv"><dt>Étudiant·e</dt><dd>${lienP(s.Etudiant)}</dd><dt>Encadrant·e</dt><dd>${lienP(s.Encadrant)}</dd><dt>Dates</dt><dd>${fDate(s.Debut)} → ${fDate(s.Fin)}</dd><dt>École</dt><dd>${lienE(s.Ecole || (P(s.Encadrant) || {}).Ecole)}</dd></dl>`); return; }
+  if (kind === 'suivi') { const s = IDX.Suivis.get(id); modale(`${s.Type || 'Suivi'} – ${s.Fenetre || ''}`, `<dl class="kv"><dt>Étudiant·e</dt><dd>${lienP(s.Etudiant)}</dd><dt>Encadrant·e</dt><dd>${lienP(s.Encadrant)}</dd><dt>Dates</dt><dd>${s.Debut ? fDate(s.Debut) + ' → ' + fDate(s.Fin) : 'année scolaire'}</dd>${liste(s.Jours).length ? `<dt>Remplacement</dt><dd>le ${esc(liste(s.Jours).join(', '))}${s.Motif ? ' (' + esc(s.Motif) + ')' : ''}</dd>` : ''}<dt>École</dt><dd>${lienE(s.Ecole || (P(s.Encadrant) || {}).Ecole)}</dd></dl>`); return; }
   const e = IDX.Evenements.get(id);
   modale(e.Titre || 'Événement', `<dl class="kv">
     <dt>Catégorie</dt><dd>${badgeCat(e.Categorie)}</dd>
@@ -994,13 +1078,13 @@ function rendreListes() {
   }
 }
 const CHAMPS_FUSION = ['Civilite', 'Madame_Monsieur', 'Nom', 'Prenom', 'Nom_complet', 'Mail', 'Telephone', 'Role', 'Annee', 'Groupe', 'Cycle', 'Modalite', 'Decharge', 'Detail',
-  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Date_du_jour', 'Signature'];
+  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Tuteur', 'Jours', 'Date_du_jour', 'Signature'];
 function contexteFusion(r) {
   const p = P(r.Personne); const ecoleId = r.Ecole || p.Ecole; const e = E(ecoleId) || {};
   const circo = r.Circonscription || circoDe(p); const ien = ienDe(circo);
   const suivisEtu = (IDX.suivisEtudiant.get(p.id) || []).filter(s => s.Annee === r.Annee && s.Statut !== 'Annulé');
   const suivisEnc = (IDX.suivisEncadrant.get(p.id) || []).filter(s => s.Annee === r.Annee && s.Statut !== 'Annulé');
-  const descSuivi = (s, autre) => { const ec = E(s.Ecole || (P(s.Encadrant) || {}).Ecole); return `${nomP(autre)} – ${[s.Type, s.Fenetre].filter(Boolean).join(' ')}${ec ? ' – ' + (ec.Libelle || ec.Nom) : ''}${s.Debut ? ` (du ${fDate(s.Debut)} au ${fDate(s.Fin)})` : ''}`; };
+  const descSuivi = (s, autre) => { const ec = E(s.Ecole || (P(s.Encadrant) || {}).Ecole); return `${nomP(autre)} – ${[s.Type, s.Fenetre].filter(Boolean).join(' ')}${liste(s.Jours).length ? ' – le ' + liste(s.Jours).join(', ') : ''}${ec ? ' – ' + (ec.Libelle || ec.Nom) : ''}${s.Debut ? ` (du ${fDate(s.Debut)} au ${fDate(s.Fin)})` : ''}`; };
   return {
     Civilite: p.Civilite || '', Madame_Monsieur: p.Civilite === 'Mme' ? 'Madame' : p.Civilite === 'M.' ? 'Monsieur' : 'Madame, Monsieur',
     Nom: (p.Nom || '').toUpperCase(), Prenom: p.Prenom || '', Nom_complet: nomP(p.id), Mail: p.Mail || '', Telephone: p.Telephone || '',
@@ -1008,6 +1092,8 @@ function contexteFusion(r) {
     Ecole: e.Nom || '', Ecole_commune: e.Commune || '', Ecole_UAI: e.UAI || '', Ecole_mail: e.Mail || '',
     Circonscription: libC(circo), IEN: nomP(ien), IEN_mail: (P(ien) || {}).Mail || '', Directeur: nomP(directeurDe(ecoleId)),
     Encadrants: suivisEtu.map(s => descSuivi(s, s.Encadrant)).join('\n'), Etudiants: suivisEnc.map(s => descSuivi(s, s.Etudiant)).join('\n'),
+    Tuteur: nomP((suivisEtu.find(s => s.Type === 'Tutorat alternant') || {}).Encadrant),
+    Jours: [...new Set([...suivisEtu, ...suivisEnc].filter(s => s.Type === 'Tutorat alternant').flatMap(s => liste(s.Jours)))].join(', '),
     Date_du_jour: dateLongue(), Signature: param('SIGNATURE'),
   };
 }
@@ -1116,7 +1202,9 @@ const CIBLES = {
     Encadrant_nom: ['encadrant nom', 'nom encadrant', 'nom mat', 'nom pemf', 'tuteur nom'], Encadrant_prenom: ['encadrant prenom', 'prenom encadrant', 'prenom mat', 'prenom pemf', 'tuteur prenom'],
     Encadrant: ['encadrant', 'tuteur', 'mat', 'pemf', 'maitre d accueil'], Etudiant: ['etudiant', 'stagiaire', 'etudiant 1', 'etudiant 2', 'etudiant 3', 'etudiant 4'],
     Type: ['type', 'type de stage'], Fenetre: ['fenetre', 'periode', 'stage'], Groupe: ['code groupe', 'groupe', 'trinome', 'binome'],
-    Debut: ['debut', 'date debut', 'du'], Fin: ['fin', 'date fin', 'au'], UAI: ['uai', 'rne'], Ecole_nom: ['ecole', 'etablissement'], Circo: ['circonscription', 'circo'], Cycle: ['cycle'] } },
+    Debut: ['debut', 'date debut', 'du'], Fin: ['fin', 'date fin', 'au'], UAI: ['uai', 'rne'], Ecole_nom: ['ecole', 'etablissement'], Circo: ['circonscription', 'circo'], Cycle: ['cycle'],
+    Jours: ['jour', 'jours', 'jour s', 'jour de remplacement', 'jours de remplacement', 'jour de decharge', 'jours de decharge', 'jour s de decharge'],
+    Motif: ['motif', 'type de decharge', 'motif de decharge', 'nature de la decharge'] } },
   evenements: { label: 'Événements / calendrier', champs: {
     Titre: ['titre', 'intitule', 'objet', 'evenement', 'type conseil', 'libelle', 'action'], Categorie: ['categorie', 'type'],
     Date_debut: ['date', 'date debut', 'debut', 'du', 'jour', 'date de debut'], Date_fin: ['date fin', 'fin', 'au', 'date de fin'],
@@ -1208,6 +1296,7 @@ function normRole(v, defaut) {
   if (!v) return defaut; const n = norm(v).replace(/\s/g, '');
   const r = ROLES.find(x => norm(x).replace(/\s/g, '') === n);
   if (r) return r;
+  if (/altern/.test(n)) return 'MEEF2 alternant';
   if (/^m2e?1|^m1/.test(n)) return 'M2E1'; if (/^m2e?2/.test(n)) return 'M2E2'; if (/meef/.test(n)) return 'MEEF2';
   if (/^l(pe)?1|^lp1/.test(n)) return 'LPE1'; if (/^l(pe)?2|^lp2/.test(n)) return 'LPE2'; if (/direct/.test(n)) return 'Directeur';
   return defaut;
@@ -1263,7 +1352,7 @@ function preparerImport() {
       const ecole = trouverEcole(o.UAI, o.Ecole_nom), circo = trouverCirco(o.Circo), cyc = lireCycles(o.Cycle);
       const enc = resoudre(en, ep, [], { Ecole: ecole || 0 });
       const encMaj = enc.existe && ecole && !(P(enc.id) || {}).Ecole ? ecole : 0;
-      const encRole = !enc.existe || !rolesDe(enc.id).some(r => r.Role === I.roleEnc || ROLES_ENCADRANTS.includes(r.Role) || r.Role === 'Formateur') ? { Role: I.roleEnc, Annee: S.annee, Circo_saisie: !ecole && circo ? circo : 0, Cycle: cyc.length ? ['L', ...cyc] : null } : null;
+      const encRole = !enc.existe || !rolesDe(enc.id).some(r => r.Role === I.roleEnc || ROLES_ENCADRANTS.includes(r.Role) || ['Formateur', 'Directeur'].includes(r.Role)) ? { Role: I.roleEnc, Annee: S.annee, Circo_saisie: !ecole && circo ? circo : 0, Cycle: cyc.length ? ['L', ...cyc] : null } : null;
       for (const etuTxt of o.Etudiant) {
         const { Nom: n, Prenom: p } = scinderNomComplet(etuTxt);
         const etu = resoudre(n, p, [], {});
@@ -1272,8 +1361,8 @@ function preparerImport() {
         vus.add(cle);
         const etuRole = !etu.existe || !rolesDe(etu.id).some(r => r.Role === I.roleEtu || ROLES_ETUDIANTS.includes(r.Role)) ? { Role: I.roleEtu, Annee: S.annee, Groupe: o.Groupe || '' } : null;
         ops.push({ statut: doublon ? 'existant' : 'nouveau', enc, etu, encRole, etuRole, encMaj,
-          suivi: doublon ? null : { Type: normType(o.Type) || I.type, Fenetre: o.Fenetre || I.fenetre, Groupe: o.Groupe || '', Debut: lireDate(o.Debut), Fin: lireDate(o.Fin), Annee: S.annee, Statut: 'Prévu', Ecole: 0 },
-          resume: `${etuTxt} → ${en.toUpperCase()} ${ep} · ${o.Fenetre || I.fenetre}${o.Groupe ? ' · ' + o.Groupe : ''}`,
+          suivi: doublon ? null : suiviImporte(o, enc),
+          resume: (() => { const sv = suiviImporte(o, enc); return `${etuTxt} → ${en.toUpperCase()} ${ep} · ${sv.Type}${sv.Fenetre ? ' · ' + sv.Fenetre : ''}${o.Groupe ? ' · ' + o.Groupe : ''}${sv.Jours ? ' · le ' + liste(sv.Jours).join(', ') : ''}${sv.Motif ? ' (' + sv.Motif + ')' : ''}`; })(),
           msg: [!enc.existe ? 'encadrant créé' : '', !etu.existe ? 'étudiant créé' : '', (o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : ecole ? '🏫 ' + libE(ecole) : ''].filter(Boolean).join(' · ') });
       }
     }
@@ -1281,7 +1370,18 @@ function preparerImport() {
   ops.nouvelles = nouvelles;
   return ops;
 }
-function normType(v) { const n = norm(v); if (!n) return ''; return TYPES_SUIVI.find(t => norm(t) === n) || (/masse/.test(n) ? 'Stage massé' : /file/.test(n) ? 'Stage filé' : /t0/.test(n) ? 'Tutorat T0' : /visite/.test(n) ? 'Visite' : ''); }
+function suiviImporte(o, enc) {
+  const I = S.imp; const type = normType(o.Type) || I.type;
+  const f = { Type: type, Fenetre: o.Fenetre || I.fenetre || (type === 'Tutorat alternant' ? 'Année' : ''), Groupe: o.Groupe || '', Debut: lireDate(o.Debut), Fin: lireDate(o.Fin), Annee: S.annee, Statut: 'Prévu', Ecole: 0 };
+  if (type === 'Tutorat alternant') {
+    const jours = o.Jours ? lireJours(o.Jours) : (enc.existe ? joursDecharge(enc.id) : []);
+    f.Jours = jours.length ? ['L', ...jours] : null;
+    const m = norm(o.Motif);
+    f.Motif = MOTIFS.find(x => norm(x) === m) || (/direct/.test(m) ? 'Décharge de direction' : /pemf/.test(m) ? 'Décharge PEMF' : /partiel/.test(m) ? 'Temps partiel' : (enc.existe ? motifPour(enc.id) : ''));
+  }
+  return f;
+}
+function normType(v) { const n = norm(v); if (!n) return ''; return TYPES_SUIVI.find(t => norm(t) === n) || (/altern/.test(n) ? 'Tutorat alternant' : /masse/.test(n) ? 'Stage massé' : /file/.test(n) ? 'Stage filé' : /t0/.test(n) ? 'Tutorat T0' : /visite/.test(n) ? 'Visite' : ''); }
 function rendreApercuImport() {
   const ops = S.imp.apercu; const n = s => ops.filter(o => o.statut === s).length;
   const nbNouvPers = ops.nouvelles ? ops.nouvelles.size : 0;
@@ -1348,6 +1448,7 @@ function rendreReglages() {
       <div class="carte"><h2>Structure du document</h2>
         ${manq.length ? `<p class="ko">Tables manquantes : ${manq.join(', ')}</p><button class="btn primaire" id="r-init">Créer les tables manquantes</button>` : `<p class="ok">Les ${TABLES.length} tables sont présentes.</p>`}
         <button class="btn" id="r-refs">Réparer l'affichage des références</button>
+        ${S.maj && S.maj.actions.length ? `<div style="margin-top:10px">${bandeauMaj()}</div>` : ''}
         <div id="r-multi"></div></div>
       <div class="carte" style="margin-top:12px"><h2>Année scolaire courante</h2>
         <p class="muted petit">Pilote les colonnes calculées (IEN de la circo, directeur, rôles courants) et l'année affichée par défaut.</p>
@@ -1479,6 +1580,7 @@ async function importerEcoles() {
    12. DÉMARRAGE
    ===================================================================== */
 document.addEventListener('click', e => {
+  if (e.target.closest('[data-maj-structure]')) { appliquerMajStructure(); return; }
   const o = e.target.closest('[data-ouvrir]'); if (o) { const [t, id] = o.dataset.ouvrir.split(':'); ouvrir(t, id); }
 });
 document.querySelectorAll('#onglets button').forEach(b => b.onclick = () => { S.onglet = b.dataset.tab; rendre(); });
