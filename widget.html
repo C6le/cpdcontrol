@@ -172,14 +172,16 @@ const SCHEMA = [
       C('Circonscription', 'Ref:Circonscriptions'), C('Education_prioritaire', 'Text'), C('ULIS', 'Bool'),
       C('Latitude', 'Numeric'), C('Longitude', 'Numeric'), C('Etat', 'Text'), C('Notes', 'Text'),
       C('Libelle', 'Text', { f: '" – ".join(x for x in [$Nom, $Commune] if x)' })] },
-  { t: 'Personnes', cols: [C('Civilite', 'Choice', { ch: ['Mme', 'M.'] }), C('Nom', 'Text'), C('Prenom', 'Text'),
+  { t: 'Personnes', cols: [C('Civilite', 'Choice', { ch: ['Mme', 'M.'] }), C('Nom', 'Text'), C('Nom_usage', 'Text'), C('Prenom', 'Text'),
       C('Mail_pro', 'Text'), C('Mail_perso', 'Text'), C('Telephone', 'Text'), C('Num_etudiant', 'Text'), C('Fonction', 'Text'),
       C('Ecole', 'Ref:Ecoles'), C('Notes', 'Text'),
       C('Nom_complet', 'Text', { f: '" ".join(x for x in [($Nom or "").upper(), $Prenom] if x)' }),
       C('Mail', 'Text', { f: '$Mail_pro or $Mail_perso' }),
       C('Cle_nom', 'Text', { f: 'import re, unicodedata\ns = unicodedata.normalize("NFD", "%s %s" % ($Nom or "", $Prenom or ""))\ns = "".join(c for c in s if not unicodedata.combining(c)).lower()\nreturn " ".join(sorted(w for w in re.split(r"[^a-z0-9]+", s) if w))' }),
+      C('Cle_nom_usage', 'Text', { f: 'import re, unicodedata\nif not $Nom_usage:\n  return ""\ns = unicodedata.normalize("NFD", "%s %s" % ($Nom_usage, $Prenom or ""))\ns = "".join(c for c in s if not unicodedata.combining(c)).lower()\nreturn " ".join(sorted(w for w in re.split(r"[^a-z0-9]+", s) if w))' }),
       C('Cle', 'Text', { f: '($Mail_pro or $Mail_perso or "").strip().lower() or $Cle_nom' }),
-      C('Doublon', 'Text', { f: 'if $Cle and len(Personnes.lookupRecords(Cle=$Cle)) > 1:\n  return "doublon"\nif $Cle_nom and len(Personnes.lookupRecords(Cle_nom=$Cle_nom)) > 1:\n  return "homonyme ?"\nreturn ""' })] },
+      // Nom de naissance et nom d'usage sont comparés dans les deux sens (MARTIN née DUPONT = DUPONT).
+      C('Doublon', 'Text', { maj: true, f: 'if $Cle and len(Personnes.lookupRecords(Cle=$Cle)) > 1:\n  return "doublon"\nautres = set()\nfor k in set(x for x in [$Cle_nom, $Cle_nom_usage] if x):\n  autres.update(r.id for r in Personnes.lookupRecords(Cle_nom=k))\n  autres.update(r.id for r in Personnes.lookupRecords(Cle_nom_usage=k))\nautres.discard($id)\nreturn "homonyme ?" if autres else ""' })] },
   { t: 'Roles', cols: [C('Personne', 'Ref:Personnes'), C('Role', 'Choice', { ch: ROLES }), C('Annee', 'Ref:Annees'),
       C('Ecole', 'Ref:Ecoles'), C('Circo_saisie', 'Ref:Circonscriptions'), C('Cycle', 'ChoiceList', { ch: ['1', '2', '3'] }),
       C('Groupe', 'Text'), C('Modalite', 'Text'), C('Decharge', 'Text'), C('Detail', 'Text'),
@@ -246,6 +248,9 @@ const $ = sel => document.querySelector(sel);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const norm = s => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9@.]+/g, ' ').trim();
 const cleNom = (...parts) => norm(parts.join(' ')).replace(/[.@]/g, ' ').split(/\s+/).filter(Boolean).sort().join(' ');
+// Clés nom + prénom d'une personne : nom (de naissance) et, s'il existe, nom d'usage.
+const clesNoms = p => [...new Set([p.Nom, p.Nom_usage].filter(Boolean).map(n => cleNom(n, p.Prenom)).filter(Boolean))];
+const memeNom = (a, b) => cleNom(a) === cleNom(b);
 const liste = v => (Array.isArray(v) && v[0] === 'L') ? v.slice(1) : [];
 const pad = n => String(n).padStart(2, '0');
 const JOUR = 86400;
@@ -352,11 +357,35 @@ async function charger() {
   IDX.personnesParMail = new Map(); IDX.personnesParNom = new Map();
   for (const p of D.Personnes) {
     for (const m of [p.Mail_pro, p.Mail_perso]) if (m) IDX.personnesParMail.set(String(m).trim().toLowerCase(), p);
-    const k = cleNom(p.Nom, p.Prenom); if (k) { if (!IDX.personnesParNom.has(k)) IDX.personnesParNom.set(k, []); IDX.personnesParNom.get(k).push(p); }
+    for (const k of clesNoms(p)) { if (!IDX.personnesParNom.has(k)) IDX.personnesParNom.set(k, []); IDX.personnesParNom.get(k).push(p); }
   }
+  await chargerAnnuaire(presentes);
   const courante = D.Annees.find(a => a.Courante) || D.Annees[D.Annees.length - 1];
   if (!S.annee || !IDX.Annees.has(S.annee)) S.annee = courante ? courante.id : null;
   remplirAnnees();
+}
+// Table facultative « Annuaire » (import de fr-en-annuaire-education) : mails des écoles et des circonscriptions,
+// indexés par UAI. Les colonnes sont reconnues quel que soit leur intitulé exact (casse, accents, « _ »).
+async function chargerAnnuaire(presentes) {
+  IDX.annuaire = new Map(); S.annuaire = false;
+  const t = presentes.find(x => norm(x) === 'annuaire'); if (!t) return;
+  let brut; try { brut = await grist.docApi.fetchTable(t); } catch (e) { return; }
+  const cols = Object.keys(brut); const col = (...noms) => cols.find(c => noms.includes(norm(c).replace(/ /g, '_')));
+  const cUai = col('identifiant_de_l_etablissement', 'uai', 'code_uai', 'rne'), cMail = col('mail', 'email', 'courriel', 'adresse_mail');
+  const cCirco = col('code_circonscription');
+  if (!cUai || !cMail) return;
+  const uai = v => String(v ?? '').trim().toUpperCase();
+  brut[cUai].forEach((u, i) => { if (u) IDX.annuaire.set(uai(u), { mail: String(brut[cMail][i] ?? '').trim(), circo: cCirco ? uai(brut[cCirco][i]) : '' }); });
+  S.annuaire = IDX.annuaire.size > 0;
+}
+const uaiAnnuaire = u => IDX.annuaire.get(String(u ?? '').trim().toUpperCase()) || null;
+// Mail de l'école : Annuaire en priorité, sinon la colonne Mail de la table Ecoles.
+function mailEcole(ecoleId) { const e = E(ecoleId); if (!e) return ''; const a = uaiAnnuaire(e.UAI); return (a && a.mail) || e.Mail || ''; }
+// Mail de la circonscription : ligne de l'Annuaire dont l'UAI est le code de la circo (ou celui indiqué sur la ligne de l'école).
+function mailCirco(circoId, ecoleId) {
+  const c = CI(circoId), e = E(ecoleId);
+  for (const code of [c && c.Code, e && (uaiAnnuaire(e.UAI) || {}).circo]) { const a = code && uaiAnnuaire(code); if (a && a.mail) return a.mail; }
+  return '';
 }
 // Lit une valeur de rôle quel que soit son format : liste Grist ['L', …], texte « PEMF, CPC »,
 // ou reste de conversion « ('PEMF', 'CPC') ».
@@ -499,6 +528,7 @@ async function calculerMajStructure() {
   const verifier = (t, c) => {
     const ex = (parTable[t] || new Map()).get(c.id);
     if (!ex) { actions.push(['AddColumn', t, c.id, infoCol(c)]); libelles.push(`colonne ${t}.${c.id}`); return; }
+    if (c.maj && c.f && ex.isFormula && ex.formula !== c.f) { actions.push(['ModifyColumn', t, c.id, { formula: c.f }]); libelles.push(`formule ${t}.${c.id}`); return; }
     if (!c.ch || !/^Choice/.test(ex.type || '')) return;
     let wo = {}; try { wo = JSON.parse(ex.widgetOptions || '{}'); } catch (e) { wo = {}; }
     const manquants = c.ch.filter(x => !(wo.choices || []).includes(x));
@@ -510,6 +540,12 @@ async function calculerMajStructure() {
   for (const sc of SCHEMA) if (parTable[sc.t]) for (const c of sc.cols) verifier(sc.t, c);
   for (const [t, c] of SCHEMA_TARDIF) if (parTable[t]) verifier(t, c);
   return { actions, libelles };
+}
+// Avant d'écrire une fiche : installe les colonnes manquantes (ex. Nom_usage), sans toucher aux données.
+async function assurerStructure() {
+  if (!S.maj || !S.maj.actions.length) return;
+  await grist.docApi.applyUserActions(S.maj.actions); await reglerAffichageRefs(); await charger();
+  toast('Structure du document mise à jour');
 }
 async function appliquerMajStructure() {
   if (!S.maj || !S.maj.actions.length) return;
@@ -554,7 +590,7 @@ function groupesDoublons() {
   const unir = (a, b) => parent.set(f(a), f(b));
   for (const p of D.Personnes) parent.set(p.id, p.id);
   const vus = new Map();
-  for (const p of D.Personnes) for (const k of [cleMail(p.Mail_pro), cleMail(p.Mail_perso), 'nom:' + cleNom(p.Nom, p.Prenom)]) {
+  for (const p of D.Personnes) for (const k of [cleMail(p.Mail_pro), cleMail(p.Mail_perso), ...clesNoms(p).map(k => 'nom:' + k)]) {
     if (!k || k === 'nom:') continue; if (vus.has(k)) unir(p.id, vus.get(k)); else vus.set(k, p.id);
   }
   const g = new Map(); for (const p of D.Personnes) { const r = f(p.id); if (!g.has(r)) g.set(r, []); g.get(r).push(p.id); }
@@ -580,6 +616,7 @@ function ouvrirDoublons() {
   if (tout) tout.onclick = async () => { $('#voile').classList.remove('ouvert'); await fusionner(sures.map(g => g.ids)); ouvrirDoublons(); };
 }
 async function fusionner(groupes) {
+  await assurerStructure();
   const actions = [], aSupprimer = [];
   const remplace = new Map(); // id doublon → id conservé
   for (const ids of groupes) { const [garde, ...autres] = [...ids].sort((a, b) => a - b); for (const a of autres) remplace.set(a, garde); }
@@ -589,6 +626,8 @@ async function fusionner(groupes) {
     const [garde, ...autres] = [...ids].sort((a, b) => a - b); const g = P(garde); const maj = {};
     for (const a of autres.map(P)) {
       for (const k of ['Civilite', 'Telephone', 'Num_etudiant', 'Fonction', 'Ecole']) if (a[k] && !g[k] && !maj[k]) maj[k] = a[k];
+      // Autre nom porté par le doublon (naissance ou usage) : conservé comme nom d'usage s'il n'y en a pas.
+      if (!g.Nom_usage && !maj.Nom_usage) { const autre = [a.Nom_usage, a.Nom].find(n => n && !memeNom(n, g.Nom)); if (autre) maj.Nom_usage = autre; }
       // Mails : on ne recopie qu'une adresse réellement nouvelle, d'abord en pro puis en perso.
       const connus = () => [g.Mail_pro, g.Mail_perso, maj.Mail_pro, maj.Mail_perso].map(cleMail).filter(Boolean);
       for (const m of [a.Mail_pro, a.Mail_perso].map(x => String(x || '').trim()).filter(Boolean)) {
@@ -723,7 +762,7 @@ function ouvrirAlerte(a) {
 function indexRecherche() {
   const items = [];
   for (const p of D.Personnes) items.push({ type: 'p', id: p.id, t1: nomP(p.id), t2: [rolesDe(p.id).map(r => r.Role).join(', '), libE(p.Ecole)].filter(Boolean).join(' · '),
-    k: norm([p.Nom, p.Prenom, p.Mail_pro, p.Mail_perso, p.Num_etudiant, p.Telephone, rolesDe(p.id).map(r => r.Role + ' ' + (r.Groupe || '')).join(' ')].join(' ')) });
+    k: norm([p.Nom, p.Nom_usage, p.Prenom, p.Mail_pro, p.Mail_perso, p.Num_etudiant, p.Telephone, rolesDe(p.id).map(r => r.Role + ' ' + (r.Groupe || '')).join(' ')].join(' ')) });
   for (const e of D.Ecoles) items.push({ type: 'e', id: e.id, t1: e.Nom, t2: [e.Commune, e.UAI, libC(e.Circonscription)].filter(Boolean).join(' · '), k: norm([e.Nom, e.Commune, e.UAI, e.Code_postal].join(' ')) });
   for (const c of D.Circonscriptions) items.push({ type: 'c', id: c.id, t1: 'Circonscription ' + libC(c.id), t2: nomP(ienDe(c.id)), k: norm(['circonscription circo', c.Nom, c.Nom_court, c.Code].join(' ')) });
   return items;
@@ -805,6 +844,7 @@ function fichePersonne(id) {
       <button class="btn" data-edit-p="${id}">Modifier</button></div>
     <div class="deux-col">
       <div><h3>Coordonnées</h3><dl class="kv">
+        ${p.Nom_usage ? `<dt>Nom d'usage</dt><dd>${esc(String(p.Nom_usage).toUpperCase())}</dd>` : ''}
         <dt>Mail pro</dt><dd>${mailto(p.Mail_pro)}</dd>
         <dt>Mail perso</dt><dd>${mailto(p.Mail_perso)}</dd>
         <dt>Téléphone</dt><dd>${p.Telephone ? `<a href="tel:${esc(String(p.Telephone).replace(/\s/g, ''))}">${esc(p.Telephone)}</a>` : '<span class="muted">—</span>'}</dd>
@@ -869,7 +909,7 @@ function optionsPersonnes(sel, filtre = null) { return '<option value="">—</op
 const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
 async function editerPersonne(id) {
   const p = id ? P(id) : {};
-  const champs = [['Civilite', 'Civilité'], ['Nom', 'Nom'], ['Prenom', 'Prénom'], ['Mail_pro', 'Mail pro'], ['Mail_perso', 'Mail perso'], ['Telephone', 'Téléphone'], ['Num_etudiant', 'N° étudiant'], ['Fonction', 'Fonction']];
+  const champs = [['Civilite', 'Civilité'], ['Nom', 'Nom (de naissance)'], ['Nom_usage', 'Nom d\'usage'], ['Prenom', 'Prénom'], ['Mail_pro', 'Mail pro'], ['Mail_perso', 'Mail perso'], ['Telephone', 'Téléphone'], ['Num_etudiant', 'N° étudiant'], ['Fonction', 'Fonction']];
   const html = `<div class="formulaire">${champs.map(([k, l]) => k === 'Civilite'
       ? `<label>${l}</label><select id="f-${k}"><option></option>${['Mme', 'M.'].map(c => `<option ${p[k] === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`
       : `<label>${l}</label><input type="text" id="f-${k}" value="${esc(p[k] || '')}">`).join('')}
@@ -879,6 +919,7 @@ async function editerPersonne(id) {
   if (!ok) return;
   const f = {}; for (const [k] of champs) f[k] = val('f-' + k); f.Ecole = +val('f-Ecole') || 0; f.Notes = val('f-Notes');
   if (!f.Nom) { toast('Le nom est obligatoire'); return; }
+  await assurerStructure();
   if (id) await agir([['UpdateRecord', 'Personnes', id, f]], 'Fiche enregistrée');
   else { const r = await agir([['AddRecord', 'Personnes', null, f]], 'Personne créée'); S.selection = { type: 'p', id: r.retValues[0] }; }
   rendre();
@@ -1080,7 +1121,14 @@ function exporterIcs() {
 /* =====================================================================
    9. LISTES DE DIFFUSION, PUBLIPOSTAGE, DOCUMENTS
    ===================================================================== */
-function etatListesDefaut() { return { roles: [], circos: [], cycle: '', groupe: '', avecMail: true, unique: true, coches: null, modele: '', modeleMail: '', pdfNextcloud: true, pdfMail: false }; }
+function etatListesDefaut() { return { roles: [], circos: [], cycle: '', groupe: '', avecMail: true, unique: true, coches: null, modele: '', modeleMail: '', pdfNextcloud: true, pdfMail: false, ccEcole: false, ccCirco: false, ccMode: 'cc' }; }
+// Adresses à mettre en copie selon les options (école de rattachement, circonscription), sans doublon ni le destinataire lui-même.
+function copiesPour(ctx) {
+  const L = S.listes; const l = [L.ccEcole && ctx.Ecole_mail, L.ccCirco && ctx.Circo_mail].filter(Boolean);
+  return [...new Set(l.map(x => x.trim()))].filter(x => x.toLowerCase() !== String(ctx.Mail || '').trim().toLowerCase());
+}
+const avecCopie = () => S.listes.ccEcole || S.listes.ccCirco;
+const libCopie = () => S.listes.ccMode === 'bcc' ? 'Cci' : 'Cc';
 function lignesListe() {
   const L = S.listes; const mots = norm(L.groupe).split(' ').filter(Boolean);
   let rows = D.Roles.filter(r => r.Annee === S.annee && P(r.Personne)
@@ -1114,8 +1162,8 @@ function rendreListes() {
           <span class="spacer"></span>
           <button class="btn" id="l-copier">Copier les mails</button>
           <button class="btn" id="l-csv">Export CSV</button></div>
-        <div class="scroll-table"><table class="t"><tr><th><input type="checkbox" id="l-tout" ${choisis.length === rows.length && rows.length ? 'checked' : ''}></th><th>Nom</th><th>Rôle</th><th>Groupe</th><th>École / circo</th><th>Mail</th></tr>
-          ${rows.map(r => { const p = P(r.Personne); return `<tr><td><input type="checkbox" class="l-c" data-id="${r.id}" ${L.coches.has(r.id) ? 'checked' : ''}></td><td>${lienP(p.id)}</td><td>${esc(r.Role)}${liste(r.Cycle).length ? ` <span class="muted">C${liste(r.Cycle).join('/')}</span>` : ''}</td><td>${esc(r.Groupe || '')}</td><td class="petit">${esc(libE(r.Ecole || p.Ecole))}<br><span class="muted">${esc(libC(r.Circonscription || circoDe(p)))}</span></td><td class="petit">${esc(p.Mail || '')}</td></tr>`; }).join('')}
+        <div class="scroll-table"><table class="t"><tr><th><input type="checkbox" id="l-tout" ${choisis.length === rows.length && rows.length ? 'checked' : ''}></th><th>Nom</th><th>Nom d'usage</th><th>Rôle</th><th>Groupe</th><th>École / circo</th><th>Mail</th></tr>
+          ${rows.map(r => { const p = P(r.Personne); return `<tr><td><input type="checkbox" class="l-c" data-id="${r.id}" ${L.coches.has(r.id) ? 'checked' : ''}></td><td>${lienP(p.id)}</td><td>${esc(String(p.Nom_usage || '').toUpperCase())}</td><td>${esc(r.Role)}${liste(r.Cycle).length ? ` <span class="muted">C${liste(r.Cycle).join('/')}</span>` : ''}</td><td>${esc(r.Groupe || '')}</td><td class="petit">${esc(libE(r.Ecole || p.Ecole))}<br><span class="muted">${esc(libC(r.Circonscription || circoDe(p)))}</span></td><td class="petit">${esc(p.Mail || '')}</td></tr>`; }).join('')}
         </table></div>
       </div>
       <div>
@@ -1123,6 +1171,13 @@ function rendreListes() {
         <div class="barre"><select id="l-modele"><option value="">— modèle de mail —</option>${modelesMail.map(m => `<option value="${m.id}" ${+L.modele === m.id ? 'selected' : ''}>${esc(m.Nom)}</option>`).join('')}</select>
           <button class="btn" id="l-test" ${L.modele ? '' : 'disabled'}>Envoyer un test à moi</button>
           <button class="btn primaire" id="l-envoyer" ${L.modele && choisis.length ? '' : 'disabled'}>Envoyer (${choisis.length})</button></div>
+        <div class="barre petit"><b>En copie :</b>
+          <label class="chk"><input type="checkbox" id="l-cc-ecole" ${L.ccEcole ? 'checked' : ''}> mail de l'école de rattachement</label>
+          <label class="chk"><input type="checkbox" id="l-cc-circo" ${L.ccCirco ? 'checked' : ''}> mail de la circonscription</label>
+          <select id="l-cc-mode"><option value="cc" ${L.ccMode !== 'bcc' ? 'selected' : ''}>Cc</option><option value="bcc" ${L.ccMode === 'bcc' ? 'selected' : ''}>Cci</option></select></div>
+        ${avecCopie() ? `<p class="petit muted">${(() => { const sans = choisis.filter(r => !copiesPour(contexteFusion(r)).length).length;
+          return `Copie appliquée à l'envoi n8n, aux PDF envoyés par mail et à l'export Thunderbird (pas à l'envoi test).${sans ? ` <span class="ko">${sans} destinataire(s) sans adresse de copie trouvée.</span>` : ''}`; })()}
+          ${S.annuaire ? '' : `<br><span class="ko">Table « Annuaire » introuvable (ou sans colonnes Identifiant_de_l_etablissement / Mail) : mail de l'école pris dans Ecoles, mail de circonscription indisponible.</span>`}</p>` : ''}
         <h3>Documents (PDF)</h3>
         <div class="barre"><select id="l-doc"><option value="">— modèle de document —</option>${modelesDoc.map(m => `<option value="${m.id}" ${+L.modeleDoc === m.id ? 'selected' : ''}>${esc(m.Nom)}</option>`).join('')}</select>
           <button class="btn" id="l-imprimer" ${L.modeleDoc && choisis.length ? '' : 'disabled'}>Imprimer / PDF navigateur</button>
@@ -1153,6 +1208,9 @@ function rendreListes() {
   $('#l-doc').onchange = e => { L.modeleDoc = e.target.value; rendreListes(); };
   $('#l-pdf-nc').onchange = e => { L.pdfNextcloud = e.target.checked; };
   $('#l-pdf-mail').onchange = e => { L.pdfMail = e.target.checked; };
+  $('#l-cc-ecole').onchange = e => { L.ccEcole = e.target.checked; rendreListes(); };
+  $('#l-cc-circo').onchange = e => { L.ccCirco = e.target.checked; rendreListes(); };
+  $('#l-cc-mode').onchange = e => { L.ccMode = e.target.value; rendreListes(); };
   $('#l-copier').onclick = () => copier([...new Set(choisis.map(r => P(r.Personne).Mail).filter(Boolean))].join('; '));
   $('#l-csv').onclick = () => exporterCsv(choisis);
   $('#l-test').onclick = () => envoyerMails(choisis.slice(0, 1), true);
@@ -1165,11 +1223,12 @@ function rendreListes() {
   const mId = +(L.modele || L.modeleDoc);
   if (mId && choisis.length) {
     const m = IDX.Modeles.get(mId); const ctx = contexteFusion(choisis[0]);
-    $('#l-apercu').innerHTML = `<div class="objet">${surligner(fusion(m.Objet, ctx, false))}</div>${surligner(fusion(corpsHtml(m.Corps), ctx, true))}`;
+    const cc = avecCopie() ? copiesPour(ctx) : [];
+    $('#l-apercu').innerHTML = `${avecCopie() ? `<div class="petit muted">${libCopie()} : ${cc.length ? esc(cc.join(', ')) : '<span class="ko">aucune adresse trouvée</span>'}</div>` : ''}<div class="objet">${surligner(fusion(m.Objet, ctx, false))}</div>${surligner(fusion(corpsHtml(m.Corps), ctx, true))}`;
   }
 }
-const CHAMPS_FUSION = ['Civilite', 'Madame_Monsieur', 'Nom', 'Prenom', 'Nom_complet', 'Mail', 'Telephone', 'Role', 'Annee', 'Groupe', 'Cycle', 'Modalite', 'Decharge', 'Detail',
-  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Tuteur', 'Jours', 'Date_du_jour', 'Signature'];
+const CHAMPS_FUSION = ['Civilite', 'Madame_Monsieur', 'Nom', 'Nom_usage', 'Prenom', 'Nom_complet', 'Mail', 'Telephone', 'Role', 'Annee', 'Groupe', 'Cycle', 'Modalite', 'Decharge', 'Detail',
+  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'Circo_mail', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Tuteur', 'Jours', 'Date_du_jour', 'Signature'];
 function contexteFusion(r) {
   const p = P(r.Personne); const ecoleId = r.Ecole || p.Ecole; const e = E(ecoleId) || {};
   const circo = r.Circonscription || circoDe(p); const ien = ienDe(circo);
@@ -1178,10 +1237,10 @@ function contexteFusion(r) {
   const descSuivi = (s, autre) => { const ec = E(s.Ecole || (P(s.Encadrant) || {}).Ecole); return `${nomP(autre)} – ${[s.Type, s.Fenetre].filter(Boolean).join(' ')}${liste(s.Jours).length ? ' – le ' + liste(s.Jours).join(', ') : ''}${ec ? ' – ' + (ec.Libelle || ec.Nom) : ''}${s.Debut ? ` (du ${fDate(s.Debut)} au ${fDate(s.Fin)})` : ''}`; };
   return {
     Civilite: p.Civilite || '', Madame_Monsieur: p.Civilite === 'Mme' ? 'Madame' : p.Civilite === 'M.' ? 'Monsieur' : 'Madame, Monsieur',
-    Nom: (p.Nom || '').toUpperCase(), Prenom: p.Prenom || '', Nom_complet: nomP(p.id), Mail: p.Mail || '', Telephone: p.Telephone || '',
+    Nom: (p.Nom || '').toUpperCase(), Nom_usage: (p.Nom_usage || '').toUpperCase(), Prenom: p.Prenom || '', Nom_complet: nomP(p.id), Mail: p.Mail || '', Telephone: p.Telephone || '',
     Role: r.Role || '', Annee: libA(r.Annee), Groupe: r.Groupe || '', Cycle: liste(r.Cycle).join(', '), Modalite: r.Modalite || '', Decharge: r.Decharge || '', Detail: r.Detail || '',
-    Ecole: e.Nom || '', Ecole_commune: e.Commune || '', Ecole_UAI: e.UAI || '', Ecole_mail: e.Mail || '',
-    Circonscription: libC(circo), IEN: nomP(ien), IEN_mail: (P(ien) || {}).Mail || '', Directeur: nomP(directeurDe(ecoleId)),
+    Ecole: e.Nom || '', Ecole_commune: e.Commune || '', Ecole_UAI: e.UAI || '', Ecole_mail: mailEcole(ecoleId),
+    Circonscription: libC(circo), Circo_mail: mailCirco(circo, ecoleId), IEN: nomP(ien), IEN_mail: (P(ien) || {}).Mail || '', Directeur: nomP(directeurDe(ecoleId)),
     Encadrants: suivisEtu.map(s => descSuivi(s, s.Encadrant)).join('\n'), Etudiants: suivisEnc.map(s => descSuivi(s, s.Etudiant)).join('\n'),
     Tuteur: nomP((suivisEtu.find(s => s.Type === 'Tutorat alternant') || {}).Encadrant),
     Jours: [...new Set([...suivisEtu, ...suivisEnc].filter(s => s.Type === 'Tutorat alternant').flatMap(s => liste(s.Jours)))].join(', '),
@@ -1194,7 +1253,7 @@ function fusion(gabarit, ctx, html) {
 }
 const surligner = html => html.replace(/\{\{\s*\w+\s*\}\}/g, m => `<span class="inconnu" title="Champ inconnu">${m}</span>`);
 function exporterCsv(rows) {
-  const cols = ['Civilite', 'Nom', 'Prenom', 'Mail', 'Telephone', 'Role', 'Groupe', 'Cycle', 'Ecole', 'Ecole_commune', 'Circonscription', 'IEN'];
+  const cols = ['Civilite', 'Nom', 'Nom_usage', 'Prenom', 'Mail', 'Telephone', 'Role', 'Groupe', 'Cycle', 'Ecole', 'Ecole_commune', 'Circonscription', 'IEN'];
   const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const lignes = [cols.join(';'), ...rows.map(r => { const c = contexteFusion(r); return cols.map(k => q(c[k])).join(';'); })];
   telecharger(`liste-${new Date().toISOString().slice(0, 10)}.csv`, '\ufeff' + lignes.join('\r\n'), 'text/csv;charset=utf-8');
@@ -1213,20 +1272,22 @@ async function envoyerMails(rows, test) {
   const m = IDX.Modeles.get(+S.listes.modele); const moi = param('MAIL_CPD');
   if (test && !moi) { modale('Adresse manquante', '<p>Renseignez <code>MAIL_CPD</code> dans Réglages.</p>'); return; }
   if (!test) {
-    const ok = await modale('Confirmer l\'envoi', `<p>Envoyer <b>${rows.length} mail(s)</b> avec le modèle « ${esc(m.Nom)} » ?</p><p class="muted petit">Chaque envoi est tracé dans la table Envois (statut mis à jour par n8n). Conseil : faites d'abord un envoi test.</p>`,
+    const ok = await modale('Confirmer l\'envoi', `<p>Envoyer <b>${rows.length} mail(s)</b> avec le modèle « ${esc(m.Nom)} »${avecCopie() ? ` (${libCopie()} : ${[S.listes.ccEcole && 'école', S.listes.ccCirco && 'circonscription'].filter(Boolean).join(' + ')})` : ''} ?</p><p class="muted petit">Chaque envoi est tracé dans la table Envois (statut mis à jour par n8n). Conseil : faites d'abord un envoi test.</p>`,
       [{ label: 'Annuler', valeur: false }, { label: `Envoyer ${rows.length} mail(s)`, primaire: true, valeur: true }]);
     if (!ok) return;
   }
   const lot = (test ? 'TEST-' : 'L') + new Date().toISOString().replace(/\D/g, '').slice(0, 14);
-  const msgs = rows.map(r => { const ctx = contexteFusion(r); return { personne: r.Personne, to: test ? moi : P(r.Personne).Mail,
-    subject: (test ? '[TEST] ' : '') + fusion(m.Objet, ctx, false), html: fusion(corpsHtml(m.Corps), ctx, true) }; });
+  // En test, la copie n'est pas envoyée (elle partirait à l'école ou à la circo) : elle est seulement indiquée dans l'objet.
+  const msgs = rows.map(r => { const ctx = contexteFusion(r); const cc = avecCopie() ? copiesPour(ctx) : [];
+    return { personne: r.Personne, to: test ? moi : P(r.Personne).Mail, cc: test ? [] : cc,
+      subject: (test ? `[TEST${cc.length ? ` – ${libCopie()} : ${cc.join(', ')}` : ''}] ` : '') + fusion(m.Objet, ctx, false), html: fusion(corpsHtml(m.Corps), ctx, true) }; });
   const now = Date.now() / 1000;
   const res = await grist.docApi.applyUserActions([['BulkAddRecord', 'Envois', msgs.map(() => null), {
     Date: msgs.map(() => now), Lot: msgs.map(() => lot), Type: msgs.map(() => 'Mail'), Modele: msgs.map(() => m.id), Personne: msgs.map(x => x.personne),
-    Destinataire: msgs.map(x => x.to), Objet: msgs.map(x => x.subject), Statut: msgs.map(() => test ? 'Test' : 'En file') }]]);
+    Destinataire: msgs.map(x => x.to + (x.cc.length ? ` (${libCopie()} : ${x.cc.join(', ')})` : '')), Objet: msgs.map(x => x.subject), Statut: msgs.map(() => test ? 'Test' : 'En file') }]]);
   const ids = res.retValues[0];
   try {
-    await posterN8n(cfg.url, { jeton: cfg.jeton, lot, replyTo: moi, messages: msgs.map((x, i) => ({ envoiId: ids[i], to: x.to, subject: x.subject, html: x.html })) });
+    await posterN8n(cfg.url, { jeton: cfg.jeton, lot, replyTo: moi, messages: msgs.map((x, i) => ({ envoiId: ids[i], to: x.to, [S.listes.ccMode === 'bcc' ? 'bcc' : 'cc']: x.cc.join(', '), subject: x.subject, html: x.html })) });
     toast(test ? `Test envoyé à ${moi}` : `${msgs.length} mail(s) transmis à n8n (lot ${lot})`, 4000);
   } catch (e) {
     await grist.docApi.applyUserActions([['BulkUpdateRecord', 'Envois', ids, { Statut: ids.map(() => 'Erreur'), Message: ids.map(() => String(e.message || e)) }]]);
@@ -1248,9 +1309,9 @@ const nomFichierSur = n => String(n || '').replace(/[\\/:*?"<>|]+/g, '-').replac
 const b64 = str => { const o = new TextEncoder().encode(str); let bin = ''; for (let i = 0; i < o.length; i += 0x8000) bin += String.fromCharCode.apply(null, o.subarray(i, i + 0x8000)); return btoa(bin); };
 const b64Lignes = str => b64(str).replace(/.{76}/g, '$&\r\n');
 // Modèle de mail au format .eml : les champs {{…}} sont laissés tels quels pour Mail Merge.
-function emlModele(m) {
+function emlModele(m, copie = '') {
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${corpsHtml(m.Corps)}</body></html>`;
-  return ['To: {{Mail}}', `Subject: =?UTF-8?B?${b64(m.Objet || m.Nom || '')}?=`, ...(param('MAIL_CPD') ? [`Reply-To: ${param('MAIL_CPD')}`] : []),
+  return ['To: {{Mail}}', ...(copie ? [`${copie === 'Cci' ? 'Bcc' : 'Cc'}: {{Copie}}`] : []), `Subject: =?UTF-8?B?${b64(m.Objet || m.Nom || '')}?=`, ...(param('MAIL_CPD') ? [`Reply-To: ${param('MAIL_CPD')}`] : []),
     'MIME-Version: 1.0', 'X-Unsent: 1', 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64Lignes(html), ''].join('\r\n');
 }
 async function pdfDepuisHtml(html) {
@@ -1272,6 +1333,7 @@ async function exporterThunderbird(rows) {
       const ctx = contexteFusion(r); const ligne = {};
       for (const c of CHAMPS_FUSION) ligne[c] = String(ctx[c] ?? '').replace(/\n/g, ' ; ');
       if (mMail) ligne.Objet = fusion(mMail.Objet, ctx, false);
+      if (avecCopie()) ligne.Copie = copiesPour(ctx).join(', ');
       if (mDoc) {
         const titre = fusion(mDoc.Objet || mDoc.Nom, ctx, false);
         ligne.Fichier = nomFichierSur((titre.includes(ctx.Nom_complet) ? titre : `${titre} - ${ctx.Nom_complet}`)) + '.pdf';
@@ -1281,14 +1343,15 @@ async function exporterThunderbird(rows) {
       lignes.push(ligne);
     }
     etat.textContent = 'Création du fichier Excel…';
-    const entetes = ['Mail', ...CHAMPS_FUSION.filter(c => c !== 'Mail'), ...(mMail ? ['Objet'] : []), ...(lignes.some(l => l.Fichier) ? ['Fichier'] : [])];
+    const entetes = ['Mail', ...CHAMPS_FUSION.filter(c => c !== 'Mail'), ...(mMail ? ['Objet'] : []), ...(avecCopie() ? ['Copie'] : []), ...(lignes.some(l => l.Fichier) ? ['Fichier'] : [])];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(lignes, { header: entetes });
     ws['!cols'] = entetes.map(h => ({ wch: Math.min(45, Math.max(h.length + 2, ...lignes.map(l => String(l[h] || '').length).slice(0, 50))) }));
     XLSX.utils.book_append_sheet(wb, ws, 'Destinataires');
     zip.file('destinataires.xlsx', XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
-    if (mMail) zip.file('modele.eml', emlModele(mMail));
-    zip.file('LISEZMOI.txt', modeEmploiThunderbird(!!mMail, lignes.some(l => l.Fichier), !!mDoc, lignes.length).replace(/\n/g, '\r\n'));
+    const copie = avecCopie() ? libCopie() : '';
+    if (mMail) zip.file('modele.eml', emlModele(mMail, copie));
+    zip.file('LISEZMOI.txt', modeEmploiThunderbird(!!mMail, lignes.some(l => l.Fichier), !!mDoc, lignes.length, copie).replace(/\n/g, '\r\n'));
     const lot = 'TB-' + new Date().toISOString().replace(/\D/g, '').slice(0, 14);
     const blob = await zip.generateAsync({ type: 'blob' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `publipostage-thunderbird-${lot.slice(3, 11)}.zip`;
@@ -1297,14 +1360,14 @@ async function exporterThunderbird(rows) {
     const now = Date.now() / 1000;
     await grist.docApi.applyUserActions([['BulkAddRecord', 'Envois', lignes.map(() => null), {
       Date: lignes.map(() => now), Lot: lignes.map(() => lot), Type: lignes.map(() => 'Mail'), Modele: lignes.map(() => mMail ? mMail.id : 0),
-      Personne: avecMail.map(r => r.Personne), Destinataire: lignes.map(l => l.Mail), Objet: lignes.map(l => l.Objet || ''),
+      Personne: avecMail.map(r => r.Personne), Destinataire: lignes.map(l => l.Mail + (l.Copie ? ` (${copie} : ${l.Copie})` : '')), Objet: lignes.map(l => l.Objet || ''),
       Statut: lignes.map(() => 'Exporté'), Message: lignes.map(l => 'Préparé pour Thunderbird' + (l.Fichier ? ' – PJ : ' + l.Fichier : '')) }]]);
     await charger();
     etat.textContent = '';
     toast(`ZIP prêt : ${lignes.length} destinataire(s)${rows.length > avecMail.length ? `, ${rows.length - avecMail.length} sans mail ignoré(s)` : ''}`, 5000);
   } catch (e) { console.error(e); etat.innerHTML = `<span class="ko">${esc(e.message || e)}</span>`; }
 }
-function modeEmploiThunderbird(avecModele, avecPJ, pdfGeneres, n) {
+function modeEmploiThunderbird(avecModele, avecPJ, pdfGeneres, n, copie = '') {
   return `PUBLIPOSTAGE THUNDERBIRD – MODE D'EMPLOI (${n} destinataire(s))
 ==========================================================
 
@@ -1315,9 +1378,10 @@ Prérequis : Thunderbird avec le module « Mail Merge » (Outils > Modules compl
 2. Préparer le message modèle
 ${avecModele ? `   - Thunderbird : Fichier > Ouvrir > Message enregistré… > choisir « modele.eml ».
    - Dans le message ouvert : Message > Modifier en tant que nouveau message (Ctrl+E).
-   - Vérifier : Pour = {{Mail}}, l'objet et le texte contiennent des champs {{…}}.
+   - Vérifier : Pour = {{Mail}}${copie ? `, ${copie} = {{Copie}}` : ''}, l'objet et le texte contiennent des champs {{…}}.
      Vous pouvez modifier le texte ; les champs disponibles sont les titres de colonnes
-     de destinataires.xlsx ({{Prenom}}, {{Ecole}}, {{IEN}}, {{Encadrants}}…).` : `   - Créer un nouveau message. Dans « Pour », écrire : {{Mail}}
+     de destinataires.xlsx ({{Prenom}}, {{Ecole}}, {{IEN}}, {{Encadrants}}…).` : `   - Créer un nouveau message. Dans « Pour », écrire : {{Mail}}${copie ? `
+     puis ajouter une ligne « ${copie} » et y écrire : {{Copie}}` : ''}
    - Rédiger l'objet et le texte avec les champs {{…}} = titres de colonnes de
      destinataires.xlsx ({{Prenom}}, {{Ecole}}, {{IEN}}…).`}
    - Une pièce jointe commune à tous peut être ajoutée normalement au message.
@@ -1333,7 +1397,9 @@ ${avecPJ ? `   - Pièces jointes : cocher, écrire {{Fichier}}, puis « Parcouri
    puis Fichier > Envoyer les messages en attente.
 
 Remarques
-- Les champs sur plusieurs lignes (Encadrants, Etudiants) sont séparés par « ; ».
+- Les champs sur plusieurs lignes (Encadrants, Etudiants) sont séparés par « ; ».${copie ? `
+- La colonne Copie contient le mail de l'école et/ou de la circonscription (vide si
+  aucune adresse n'a été trouvée : le message part alors sans copie).` : ''}
 - Ne pas renommer les colonnes du fichier Excel : ce sont les noms des champs.
 `;
 }
@@ -1368,7 +1434,7 @@ async function genererPdf(rows) {
   try {
     await posterN8n(cfg.url, { jeton: cfg.jeton, lot, dossier: param('DOSSIER_PDF'), enregistrer: L.pdfNextcloud, envoyerMail: L.pdfMail, replyTo: param('MAIL_CPD'),
       documents: docs.map((d, i) => ({ envoiId: ids[i], nomFichier: fichier(d), html: `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>${PAGE_CSS}</style></head><body>${d.html}</body></html>`,
-        to: d.ctx.Mail, subject: mMail ? fusion(mMail.Objet, d.ctx, false) : '', corpsMail: mMail ? fusion(corpsHtml(mMail.Corps), d.ctx, true) : '' })) });
+        to: d.ctx.Mail, ...(L.pdfMail && avecCopie() ? { [L.ccMode === 'bcc' ? 'bcc' : 'cc']: copiesPour(d.ctx).join(', ') } : {}), subject: mMail ? fusion(mMail.Objet, d.ctx, false) : '', corpsMail: mMail ? fusion(corpsHtml(mMail.Corps), d.ctx, true) : '' })) });
     toast(`${docs.length} document(s) transmis à n8n`, 4000);
   } catch (e) {
     await grist.docApi.applyUserActions([['BulkUpdateRecord', 'Envois', ids, { Statut: ids.map(() => 'Erreur'), Message: ids.map(() => String(e.message || e)) }]]);
@@ -1382,7 +1448,8 @@ async function genererPdf(rows) {
    ===================================================================== */
 const CIBLES = {
   personnes: { label: 'Personnes et rôles', champs: {
-    Civilite: ['civilite', 'civ', 'genre'], Nom: ['nom', 'nom d usage', 'nom de famille', 'nom usage', 'nom patronymique'], Prenom: ['prenom'],
+    Civilite: ['civilite', 'civ', 'genre'], Nom: ['nom', 'nom de famille', 'nom patronymique', 'nom de naissance', 'nom de jeune fille', 'nom jeune fille'],
+    Nom_usage: ['nom d usage', 'nom usage', 'nom usuel', 'nom marital', 'nom d epouse', 'nom epouse', 'nom d epoux'], Prenom: ['prenom'],
     Nom_complet: ['nom complet', 'nom prenom', 'prenom nom', 'identite', 'etudiant', 'stagiaire', 'pemf', 'name'],
     Mail_pro: ['mail', 'email', 'e mail', 'courriel', 'mail pro', 'mail academique', 'adresse mail', 'adresse mail academique', 'adresse mail universitaire', 'mail universitaire', 'adresse electronique'],
     Mail_perso: ['mail perso', 'adresse mail perso', 'email perso', 'mail personnel'], Telephone: ['tel', 'telephone', 'portable', 'mobile', 'tel portable'],
@@ -1441,19 +1508,21 @@ function trouverCirco(texte) {
 const cleMail = m => String(m || '').trim().toLowerCase();
 // Clé primaire : le mail (pro ou perso) ; à défaut nom + prénom (ordre, accents, tirets et casse indifférents) ;
 // en dernier recours un nom « approchant » (nom composé, 2e prénom) s'il ne désigne qu'une seule personne.
-function trouverPersonne(nom, prenom, mails = []) {
+// Le nom collé et le nom d'usage collé sont comparés au nom ET au nom d'usage des fiches (MARTIN née DUPONT).
+function trouverPersonne(nom, prenom, mails = [], nomUsage = '') {
   for (const m of mails) { if (!m) continue; const p = IDX.personnesParMail.get(cleMail(m)); if (p) return { id: p.id, par: 'mail' }; }
-  const k = cleNom(nom, prenom); if (!k) return null;
-  const l = IDX.personnesParNom.get(k);
-  if (l && l.length) {
+  const cles = [...new Set([nom, nomUsage].filter(Boolean).map(n => cleNom(n, prenom)).filter(Boolean))]; if (!cles.length) return null;
+  for (const k of cles) {
+    const l = IDX.personnesParNom.get(k);
+    if (!l || !l.length) continue;
     // Même nom mais mails différents des deux côtés : homonymes, pas la même personne.
     const avecMail = mails.filter(Boolean).length && l.every(p => p.Mail_pro || p.Mail_perso);
-    if (!avecMail) return { id: l[0].id, par: 'nom' };
+    if (!avecMail) return { id: l[0].id, par: cleNom(l[0].Nom, l[0].Prenom) === k && k === cles[0] ? 'nom' : 'nom d\'usage' };
   }
-  const mots = k.split(' ');
-  if (mots.length < 2 || mails.filter(Boolean).length) return null;
-  const candidats = D.Personnes.filter(p => { const pk = cleNom(p.Nom, p.Prenom).split(' '); if (pk.length < 2) return false;
-    const [court, long] = mots.length <= pk.length ? [mots, pk] : [pk, mots]; return court.every(w => long.includes(w)); });
+  if (mails.filter(Boolean).length) return null;
+  const candidats = D.Personnes.filter(p => clesNoms(p).some(pkk => { const pk = pkk.split(' '); if (pk.length < 2) return false;
+    return cles.some(k => { const mots = k.split(' '); if (mots.length < 2) return false;
+      const [court, long] = mots.length <= pk.length ? [mots, pk] : [pk, mots]; return court.every(w => long.includes(w)); }); }));
   return candidats.length === 1 ? { id: candidats[0].id, par: 'nom approchant' } : null;
 }
 function rendreImport() {
@@ -1473,7 +1542,7 @@ function rendreImport() {
     </div>
     <textarea id="imp-txt" rows="8" placeholder="Copiez un tableau depuis Excel / LibreOffice / un CSV (ligne d'en-têtes comprise) et collez-le ici.">${esc(I.texte)}</textarea>
     <div class="barre" style="margin-top:8px"><button class="btn primaire" id="imp-analyser">Analyser</button>
-      <span class="muted petit">Doublons détectés par mail puis par nom + prénom (dans n'importe quel ordre). Les fiches existantes ne sont complétées que sur les champs vides.</span></div>
+      <span class="muted petit">Doublons détectés par mail puis par nom + prénom (dans n'importe quel ordre), le nom de naissance et le nom d'usage étant comparés dans les deux sens. Les fiches existantes ne sont complétées que sur les champs vides.</span></div>
     </div><div id="imp-suite"></div>`;
   document.querySelectorAll('[name=imp-cible]').forEach(r => r.onchange = () => { I.cible = r.value; I.mapping = null; I.apercu = null; rendreImport(); });
   const lier = (id, cle) => { const el = $(id); if (el) el.onchange = e => { I[cle] = e.target.value; }; };
@@ -1529,33 +1598,42 @@ function preparerImport() {
   // Nouvelles personnes du lot, indexées par mail ET par nom pour ne pas les créer deux fois.
   const lotParMail = new Map(), lotParNom = new Map();
   const resoudre = (nom, prenom, mails, extra) => {
-    const t = trouverPersonne(nom, prenom, mails);
+    const t = trouverPersonne(nom, prenom, mails, extra.Nom_usage);
     if (t) return { id: t.id, existe: true, par: t.par };
-    const ms = mails.map(cleMail).filter(Boolean), kn = cleNom(nom, prenom);
-    let n = ms.map(m => lotParMail.get(m)).find(Boolean) || (kn && lotParNom.get(kn) && !(ms.length && lotParNom.get(kn).mails.length && !ms.some(m => lotParNom.get(kn).mails.includes(m))) ? lotParNom.get(kn) : null);
+    const ms = mails.map(cleMail).filter(Boolean);
+    const kns = [...new Set([nom, extra.Nom_usage].filter(Boolean).map(x => cleNom(x, prenom)).filter(Boolean))];
+    const compatible = x => x && !(ms.length && x.mails.length && !ms.some(m => x.mails.includes(m)));
+    let n = ms.map(m => lotParMail.get(m)).find(Boolean) || kns.map(k => lotParNom.get(k)).find(compatible) || null;
     if (!n) { n = { tmp: 'n' + nouvelles.size, fields: { Nom: nom, Prenom: prenom, ...extra }, mails: [] }; nouvelles.set(n.tmp, n); }
     else for (const [k, v] of Object.entries(extra)) if (v && !n.fields[k]) n.fields[k] = v; // complète avec les infos de la 2e ligne
     for (const m of ms) { lotParMail.set(m, n); if (!n.mails.includes(m)) n.mails.push(m); }
-    if (kn && !lotParNom.has(kn)) lotParNom.set(kn, n);
+    for (const k of kns) if (!lotParNom.has(k)) lotParNom.set(k, n);
     return { tmp: n.tmp, existe: false, par: 'lot' };
   };
   if (I.cible === 'personnes') {
     for (const l of I.lignes) {
       const o = lireLigne(l); let { Nom: nom = '', Prenom: prenom = '' } = o;
       if (!nom && o.Nom_complet) ({ Nom: nom, Prenom: prenom } = scinderNomComplet(o.Nom_complet));
+      // Seul le nom d'usage est fourni : il sert de nom.
+      let nomUsage = o.Nom_usage || ''; if (!nom && nomUsage) { nom = nomUsage; nomUsage = ''; }
+      if (nomUsage && memeNom(nomUsage, nom)) nomUsage = '';
       if (!nom) { ops.push({ statut: 'erreur', msg: 'nom manquant', resume: l.join(' | ').slice(0, 80) }); continue; }
       const ecole = trouverEcole(o.UAI, o.Ecole_nom), circo = trouverCirco(o.Circo);
       const civ = /^(mme|madame|mlle|f)/i.test(o.Civilite || '') ? 'Mme' : /^(m|mr|monsieur|h)\b/i.test(o.Civilite || '') ? 'M.' : '';
-      const extra = { Civilite: civ, Mail_pro: o.Mail_pro || '', Mail_perso: o.Mail_perso || '', Telephone: o.Telephone || '', Num_etudiant: o.Num_etudiant || '', Fonction: o.Fonction || '', Ecole: ecole || 0 };
+      const extra = { Civilite: civ, Nom_usage: nomUsage, Mail_pro: o.Mail_pro || '', Mail_perso: o.Mail_perso || '', Telephone: o.Telephone || '', Num_etudiant: o.Num_etudiant || '', Fonction: o.Fonction || '', Ecole: ecole || 0 };
       const pers = resoudre(nom, prenom, [o.Mail_pro, o.Mail_perso], extra);
       const role = normRole(o.Role, I.role); const cyc = lireCycles(o.Cycle);
       const dejaRole = pers.existe && rolesDe(pers.id).some(r => r.Role === role);
       const p0 = pers.existe ? P(pers.id) : null;
+      // Fiche reconnue (par mail ou par l'autre nom) sous un nom différent : cet autre nom devient son nom d'usage.
+      let autreNom = '';
+      if (p0 && !p0.Nom_usage) autreNom = [nomUsage, nom].find(n => n && !memeNom(n, p0.Nom)) || '';
+      if (autreNom) extra.Nom_usage = autreNom;
       const mailDiff = p0 && o.Mail_pro && ![p0.Mail_pro, p0.Mail_perso].map(cleMail).includes(cleMail(o.Mail_pro)) && (p0.Mail_pro || p0.Mail_perso);
       ops.push({ statut: !pers.existe ? 'nouveau' : dejaRole ? 'existant' : 'complété', pers, extra, reconnu: pers.existe ? `reconnu par ${pers.par} : ${nomP(pers.id)}` : '', mailDiff,
         role: dejaRole ? null : { Role: role, Annee: S.annee, Ecole: 0, Circo_saisie: !ecole && circo ? circo : 0, Groupe: o.Groupe || '', Cycle: cyc.length ? ['L', ...cyc] : null, Modalite: o.Modalite || '', Decharge: o.Decharge || '', Detail: o.Detail || '' },
-        resume: `${(nom || '').toUpperCase()} ${prenom} · ${role}${o.Groupe ? ' · ' + o.Groupe : ''}`,
-        msg: [(o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : '', ecole ? '🏫 ' + libE(ecole) : '', o.Circo && !circo ? `circo non reconnue : « ${o.Circo} »` : ''].filter(Boolean).join(' · ') });
+        resume: `${(nom || '').toUpperCase()}${nomUsage ? ` (usage ${nomUsage.toUpperCase()})` : ''} ${prenom} · ${role}${o.Groupe ? ' · ' + o.Groupe : ''}`,
+        msg: [autreNom ? `nom d'usage ajouté : ${autreNom.toUpperCase()}` : '', (o.UAI || o.Ecole_nom) && !ecole ? `école non reconnue : « ${o.Ecole_nom || o.UAI} »` : '', ecole ? '🏫 ' + libE(ecole) : '', o.Circo && !circo ? `circo non reconnue : « ${o.Circo} »` : ''].filter(Boolean).join(' · ') });
     }
   } else {
     const vus = new Set();
@@ -1604,7 +1682,7 @@ function rendreApercuImport() {
     <span class="ok">${n('nouveau')} nouvelle(s) ligne(s)</span> · ${n('complété')} complétée(s) · <span class="muted">${n('existant')} déjà présente(s)</span> · <span class="ko">${n('erreur')} en erreur</span>
     ${S.imp.cible !== 'evenements' ? ` · <b>${nbNouvPers}</b> personne(s) à créer` : ''}</p>
     <div class="scroll-table"><table class="t"><tr><th>Statut</th><th>Ligne</th><th>Remarques</th></tr>
-    ${ops.map(o => `<tr><td class="${o.statut === 'erreur' ? 'ko' : o.statut === 'existant' ? 'muted' : 'ok'}">${o.statut}</td><td>${esc(o.resume)}</td><td class="petit ${/non reconnue|approchant/.test(o.msg + (o.reconnu || '')) || o.mailDiff ? 'warn' : 'muted'}">${esc([o.reconnu, o.mailDiff ? 'mail différent de la fiche (non modifié)' : '', o.msg].filter(Boolean).join(' · '))}</td></tr>`).join('')}
+    ${ops.map(o => `<tr><td class="${o.statut === 'erreur' ? 'ko' : o.statut === 'existant' ? 'muted' : 'ok'}">${o.statut}</td><td>${esc(o.resume)}</td><td class="petit ${/non reconnue|approchant|usage/.test(o.msg + (o.reconnu || '')) || o.mailDiff ? 'warn' : 'muted'}">${esc([o.reconnu, o.mailDiff ? 'mail différent de la fiche (non modifié)' : '', o.msg].filter(Boolean).join(' · '))}</td></tr>`).join('')}
     </table></div>
     <div class="barre" style="margin-top:8px"><button class="btn primaire" id="imp-go" ${ops.some(o => o.statut === 'nouveau' || o.statut === 'complété') ? '' : 'disabled'}>Importer dans Grist</button></div>`;
   $('#imp-go').onclick = executerImport;
@@ -1612,6 +1690,7 @@ function rendreApercuImport() {
 async function executerImport() {
   const I = S.imp, ops = I.apercu; const bouton = $('#imp-go'); bouton.disabled = true; bouton.textContent = 'Import en cours…';
   try {
+    if (I.cible !== 'evenements') await assurerStructure();
     if (I.cible === 'evenements') {
       const ev = ops.filter(o => o.statut === 'nouveau').map(o => o.evt);
       const cols = Object.keys(ev[0]); const data = {}; for (const c of cols) data[c] = ev.map(e => e[c]);
@@ -1620,7 +1699,7 @@ async function executerImport() {
       // 1. Personnes nouvelles
       const nouv = [...ops.nouvelles.values()]; const tmpId = new Map();
       if (nouv.length) {
-        const cols = ['Nom', 'Prenom', 'Civilite', 'Mail_pro', 'Mail_perso', 'Telephone', 'Num_etudiant', 'Fonction', 'Ecole'];
+        const cols = ['Nom', 'Nom_usage', 'Prenom', 'Civilite', 'Mail_pro', 'Mail_perso', 'Telephone', 'Num_etudiant', 'Fonction', 'Ecole'];
         const data = {}; for (const c of cols) data[c] = nouv.map(n => n.fields[c] ?? (c === 'Ecole' ? 0 : ''));
         const r = await grist.docApi.applyUserActions([['BulkAddRecord', 'Personnes', nouv.map(() => null), data]]);
         r.retValues[0].forEach((id, i) => tmpId.set(nouv[i].tmp, id));
