@@ -1121,7 +1121,19 @@ function exporterIcs() {
 /* =====================================================================
    9. LISTES DE DIFFUSION, PUBLIPOSTAGE, DOCUMENTS
    ===================================================================== */
-function etatListesDefaut() { return { roles: [], circos: [], cycle: '', groupe: '', avecMail: true, unique: true, coches: null, modele: '', modeleMail: '', pdfNextcloud: true, pdfMail: false, ccEcole: false, ccCirco: false, ccMode: 'cc' }; }
+// Fenêtres de stage : valeurs de Suivis.Fenetre de l'année ; '' = suivis sans fenêtre.
+const SANS_FENETRE = '(sans fenêtre)';
+const fenetreDe = s => String(s.Fenetre || '').trim();
+const suivisActifs = (pid, annee, cote) => (IDX[cote === 'enc' ? 'suivisEncadrant' : 'suivisEtudiant'].get(pid) || []).filter(s => s.Annee === annee && s.Statut !== 'Annulé');
+// Suivis retenus pour le publipostage : ceux des fenêtres cochées (tous si aucune).
+const dansFenetres = s => { const f = (S.listes || {}).fenetres || []; return !f.length || f.includes(fenetreDe(s)); };
+function fenetresAnnee() {
+  const v = new Map();
+  for (const s of D.Suivis) if (s.Annee === S.annee && s.Statut !== 'Annulé') { const f = fenetreDe(s); const d = v.get(f); if (d === undefined || (s.Debut && (!d || s.Debut < d))) v.set(f, s.Debut || d || 0); }
+  // Ordre chronologique (date de début la plus précoce), puis alphabétique.
+  return [...v].sort((a, b) => (a[1] || Infinity) - (b[1] || Infinity) || a[0].localeCompare(b[0], 'fr', { numeric: true })).map(x => x[0]);
+}
+function etatListesDefaut() { return { fenetres: [], roles: [], circos: [], cycle: '', groupe: '', avecMail: true, unique: true, coches: null, modele: '', modeleMail: '', pdfNextcloud: true, pdfMail: false, ccEcole: false, ccCirco: false, ccMode: 'cc' }; }
 // Adresses à mettre en copie selon les options (école de rattachement, circonscription), sans doublon ni le destinataire lui-même.
 function copiesPour(ctx) {
   const L = S.listes; const l = [L.ccEcole && ctx.Ecole_mail, L.ccCirco && ctx.Circo_mail].filter(Boolean);
@@ -1136,18 +1148,22 @@ function lignesListe() {
     && (!L.circos.length || L.circos.includes(r.Circonscription) || L.circos.includes(circoDe(P(r.Personne))))
     && (!L.cycle || liste(r.Cycle).includes(L.cycle))
     && (!mots.length || mots.every(m => norm(r.Groupe).includes(m))));
+  if (L.fenetres.length) rows = rows.filter(r => ['etu', 'enc'].some(c => suivisActifs(r.Personne, r.Annee, c).some(dansFenetres)));
   if (L.avecMail) rows = rows.filter(r => P(r.Personne).Mail);
   if (L.unique) { const vu = new Set(); rows = rows.filter(r => !vu.has(r.Personne) && vu.add(r.Personne)); }
   return rows.sort((a, b) => nomP(a.Personne).localeCompare(nomP(b.Personne)));
 }
 function rendreListes() {
   if (!S.listes) S.listes = etatListesDefaut();
-  const L = S.listes; const rows = lignesListe();
+  const L = S.listes; if (!L.fenetres) L.fenetres = [];
+  const fenetres = fenetresAnnee(); L.fenetres = L.fenetres.filter(f => fenetres.includes(f)); const rows = lignesListe();
   if (!L.coches || L._sig !== rows.map(r => r.id).join(',')) { L.coches = new Set(rows.map(r => r.id)); L._sig = rows.map(r => r.id).join(','); }
   const choisis = rows.filter(r => L.coches.has(r.id));
   const modelesMail = D.Modeles.filter(m => m.Type !== 'Document'), modelesDoc = D.Modeles.filter(m => m.Type === 'Document');
   $('#main').innerHTML = `
     <div class="barre"><b>Rôles :</b><div class="chips" id="l-roles">${ROLES.map(r => `<span class="chip ${L.roles.includes(r) ? 'on' : ''}" data-v="${r}">${r}</span>`).join('')}</div></div>
+    ${fenetres.length ? `<div class="barre"><b>Fenêtres de stage :</b><div class="chips" id="l-fenetres">${fenetres.map(f => `<span class="chip ${L.fenetres.includes(f) ? 'on' : ''}" data-v="${esc(f)}">${esc(f || SANS_FENETRE)}</span>`).join('')}</div>
+      ${L.fenetres.length ? '<span class="petit muted">personnes ayant un suivi dans ces fenêtres ; {{Encadrants}}, {{Etudiants}} et {{Fenetre}} limités à ces fenêtres</span>' : ''}</div>` : ''}
     <div class="barre">
       <select id="l-circo"><option value="">${L.circos.length ? '+ ajouter une circo' : 'Toutes circonscriptions'}</option>${D.Circonscriptions.filter(c => !L.circos.includes(c.id)).sort((a, b) => libC(a.id).localeCompare(libC(b.id))).map(c => `<option value="${c.id}">${esc(libC(c.id))}</option>`).join('')}</select>
       ${L.circos.map(id => `<span class="chip on" data-retirer-circo="${id}">${esc(libC(id))} ✕</span>`).join('')}
@@ -1195,6 +1211,7 @@ function rendreListes() {
         <p class="petit muted">Champs disponibles : ${CHAMPS_FUSION.map(c => `<code>{{${c}}}</code>`).join(' ')}</p>
       </div>
     </div>`;
+  document.querySelectorAll('#l-fenetres .chip').forEach(c => c.onclick = () => { const v = c.dataset.v; L.fenetres = L.fenetres.includes(v) ? L.fenetres.filter(x => x !== v) : [...L.fenetres, v]; rendreListes(); });
   document.querySelectorAll('#l-roles .chip').forEach(c => c.onclick = () => { const v = c.dataset.v; L.roles = L.roles.includes(v) ? L.roles.filter(x => x !== v) : [...L.roles, v]; rendreListes(); });
   $('#l-circo').onchange = e => { if (e.target.value) L.circos.push(+e.target.value); rendreListes(); };
   document.querySelectorAll('[data-retirer-circo]').forEach(c => c.onclick = () => { L.circos = L.circos.filter(x => x !== +c.dataset.retirerCirco); rendreListes(); });
@@ -1228,12 +1245,12 @@ function rendreListes() {
   }
 }
 const CHAMPS_FUSION = ['Civilite', 'Madame_Monsieur', 'Nom', 'Nom_usage', 'Prenom', 'Nom_complet', 'Mail', 'Telephone', 'Role', 'Annee', 'Groupe', 'Cycle', 'Modalite', 'Decharge', 'Detail',
-  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'Circo_mail', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Tuteur', 'Jours', 'Date_du_jour', 'Signature'];
+  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'Circo_mail', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Fenetre', 'Tuteur', 'Jours', 'Date_du_jour', 'Signature'];
 function contexteFusion(r) {
   const p = P(r.Personne); const ecoleId = r.Ecole || p.Ecole; const e = E(ecoleId) || {};
   const circo = r.Circonscription || circoDe(p); const ien = ienDe(circo);
-  const suivisEtu = (IDX.suivisEtudiant.get(p.id) || []).filter(s => s.Annee === r.Annee && s.Statut !== 'Annulé');
-  const suivisEnc = (IDX.suivisEncadrant.get(p.id) || []).filter(s => s.Annee === r.Annee && s.Statut !== 'Annulé');
+  const suivisEtu = suivisActifs(p.id, r.Annee, 'etu').filter(dansFenetres);
+  const suivisEnc = suivisActifs(p.id, r.Annee, 'enc').filter(dansFenetres);
   const descSuivi = (s, autre) => { const ec = E(s.Ecole || (P(s.Encadrant) || {}).Ecole); return `${nomP(autre)} – ${[s.Type, s.Fenetre].filter(Boolean).join(' ')}${liste(s.Jours).length ? ' – le ' + liste(s.Jours).join(', ') : ''}${ec ? ' – ' + (ec.Libelle || ec.Nom) : ''}${s.Debut ? ` (du ${fDate(s.Debut)} au ${fDate(s.Fin)})` : ''}`; };
   return {
     Civilite: p.Civilite || '', Madame_Monsieur: p.Civilite === 'Mme' ? 'Madame' : p.Civilite === 'M.' ? 'Monsieur' : 'Madame, Monsieur',
@@ -1242,6 +1259,7 @@ function contexteFusion(r) {
     Ecole: e.Nom || '', Ecole_commune: e.Commune || '', Ecole_UAI: e.UAI || '', Ecole_mail: mailEcole(ecoleId),
     Circonscription: libC(circo), Circo_mail: mailCirco(circo, ecoleId), IEN: nomP(ien), IEN_mail: (P(ien) || {}).Mail || '', Directeur: nomP(directeurDe(ecoleId)),
     Encadrants: suivisEtu.map(s => descSuivi(s, s.Encadrant)).join('\n'), Etudiants: suivisEnc.map(s => descSuivi(s, s.Etudiant)).join('\n'),
+    Fenetre: [...new Set([...suivisEtu, ...suivisEnc].map(fenetreDe).filter(Boolean))].join(', '),
     Tuteur: nomP((suivisEtu.find(s => s.Type === 'Tutorat alternant') || {}).Encadrant),
     Jours: [...new Set([...suivisEtu, ...suivisEnc].filter(s => s.Type === 'Tutorat alternant').flatMap(s => liste(s.Jours)))].join(', '),
     Date_du_jour: dateLongue(), Signature: param('SIGNATURE'),
