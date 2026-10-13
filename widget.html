@@ -1133,7 +1133,7 @@ function fenetresAnnee() {
   // Ordre chronologique (date de début la plus précoce), puis alphabétique.
   return [...v].sort((a, b) => (a[1] || Infinity) - (b[1] || Infinity) || a[0].localeCompare(b[0], 'fr', { numeric: true })).map(x => x[0]);
 }
-function etatListesDefaut() { return { fenetres: [], roles: [], circos: [], cycle: '', groupe: '', avecMail: true, unique: true, coches: null, modele: '', modeleMail: '', pdfNextcloud: true, pdfMail: false, ccEcole: false, ccCirco: false, ccMode: 'cc' }; }
+function etatListesDefaut() { return { mailsSuivis: true, fenetres: [], roles: [], circos: [], cycle: '', groupe: '', avecMail: true, unique: true, coches: null, modele: '', modeleMail: '', pdfNextcloud: true, pdfMail: false, ccEcole: false, ccCirco: false, ccMode: 'cc' }; }
 // Adresses à mettre en copie selon les options (école de rattachement, circonscription), sans doublon ni le destinataire lui-même.
 function copiesPour(ctx) {
   const L = S.listes; const l = [L.ccEcole && ctx.Ecole_mail, L.ccCirco && ctx.Circo_mail].filter(Boolean);
@@ -1191,6 +1191,7 @@ function rendreListes() {
           <label class="chk"><input type="checkbox" id="l-cc-ecole" ${L.ccEcole ? 'checked' : ''}> mail de l'école de rattachement</label>
           <label class="chk"><input type="checkbox" id="l-cc-circo" ${L.ccCirco ? 'checked' : ''}> mail de la circonscription</label>
           <select id="l-cc-mode"><option value="cc" ${L.ccMode !== 'bcc' ? 'selected' : ''}>Cc</option><option value="bcc" ${L.ccMode === 'bcc' ? 'selected' : ''}>Cci</option></select></div>
+        <div class="barre petit"><label class="chk"><input type="checkbox" id="l-mails-suivis" ${L.mailsSuivis !== false ? 'checked' : ''}> ajouter le mail de chaque encadrant / stagiaire dans <code>{{Encadrants}}</code> et <code>{{Etudiants}}</code></label></div>
         ${avecCopie() ? `<p class="petit muted">${(() => { const sans = choisis.filter(r => !copiesPour(contexteFusion(r)).length).length;
           return `Copie appliquée à l'envoi n8n, aux PDF envoyés par mail et à l'export Thunderbird (pas à l'envoi test).${sans ? ` <span class="ko">${sans} destinataire(s) sans adresse de copie trouvée.</span>` : ''}`; })()}
           ${S.annuaire ? '' : `<br><span class="ko">Table « Annuaire » introuvable (ou sans colonnes Identifiant_de_l_etablissement / Mail) : mail de l'école pris dans Ecoles, mail de circonscription indisponible.</span>`}</p>` : ''}
@@ -1228,6 +1229,7 @@ function rendreListes() {
   $('#l-cc-ecole').onchange = e => { L.ccEcole = e.target.checked; rendreListes(); };
   $('#l-cc-circo').onchange = e => { L.ccCirco = e.target.checked; rendreListes(); };
   $('#l-cc-mode').onchange = e => { L.ccMode = e.target.value; rendreListes(); };
+  $('#l-mails-suivis').onchange = e => { L.mailsSuivis = e.target.checked; rendreListes(); };
   $('#l-copier').onclick = () => copier([...new Set(choisis.map(r => P(r.Personne).Mail).filter(Boolean))].join('; '));
   $('#l-csv').onclick = () => exporterCsv(choisis);
   $('#l-test').onclick = () => envoyerMails(choisis.slice(0, 1), true);
@@ -1245,13 +1247,15 @@ function rendreListes() {
   }
 }
 const CHAMPS_FUSION = ['Civilite', 'Madame_Monsieur', 'Nom', 'Nom_usage', 'Prenom', 'Nom_complet', 'Mail', 'Telephone', 'Role', 'Annee', 'Groupe', 'Cycle', 'Modalite', 'Decharge', 'Detail',
-  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'Circo_mail', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Etudiants', 'Fenetre', 'Tuteur', 'Jours', 'Date_du_jour', 'Signature'];
+  'Ecole', 'Ecole_commune', 'Ecole_UAI', 'Ecole_mail', 'Circonscription', 'Circo_mail', 'IEN', 'IEN_mail', 'Directeur', 'Encadrants', 'Encadrants_mails', 'Etudiants', 'Etudiants_mails', 'Fenetre', 'Tuteur', 'Jours', 'Date_du_jour', 'Signature'];
 function contexteFusion(r) {
   const p = P(r.Personne); const ecoleId = r.Ecole || p.Ecole; const e = E(ecoleId) || {};
   const circo = r.Circonscription || circoDe(p); const ien = ienDe(circo);
   const suivisEtu = suivisActifs(p.id, r.Annee, 'etu').filter(dansFenetres);
   const suivisEnc = suivisActifs(p.id, r.Annee, 'enc').filter(dansFenetres);
-  const descSuivi = (s, autre) => { const ec = E(s.Ecole || (P(s.Encadrant) || {}).Ecole); return `${nomP(autre)} – ${[s.Type, s.Fenetre].filter(Boolean).join(' ')}${liste(s.Jours).length ? ' – le ' + liste(s.Jours).join(', ') : ''}${ec ? ' – ' + (ec.Libelle || ec.Nom) : ''}${s.Debut ? ` (du ${fDate(s.Debut)} au ${fDate(s.Fin)})` : ''}`; };
+  const avecMails = (S.listes || {}).mailsSuivis !== false;
+  const mailDe = id => (P(id) || {}).Mail || '';
+  const descSuivi = (s, autre) => { const ec = E(s.Ecole || (P(s.Encadrant) || {}).Ecole); return `${nomP(autre)}${avecMails && mailDe(autre) ? ` (${mailDe(autre)})` : ''} – ${[s.Type, s.Fenetre].filter(Boolean).join(' ')}${liste(s.Jours).length ? ' – le ' + liste(s.Jours).join(', ') : ''}${ec ? ' – ' + (ec.Libelle || ec.Nom) : ''}${s.Debut ? ` (du ${fDate(s.Debut)} au ${fDate(s.Fin)})` : ''}`; };
   return {
     Civilite: p.Civilite || '', Madame_Monsieur: p.Civilite === 'Mme' ? 'Madame' : p.Civilite === 'M.' ? 'Monsieur' : 'Madame, Monsieur',
     Nom: (p.Nom || '').toUpperCase(), Nom_usage: (p.Nom_usage || '').toUpperCase(), Prenom: p.Prenom || '', Nom_complet: nomP(p.id), Mail: p.Mail || '', Telephone: p.Telephone || '',
@@ -1259,6 +1263,8 @@ function contexteFusion(r) {
     Ecole: e.Nom || '', Ecole_commune: e.Commune || '', Ecole_UAI: e.UAI || '', Ecole_mail: mailEcole(ecoleId),
     Circonscription: libC(circo), Circo_mail: mailCirco(circo, ecoleId), IEN: nomP(ien), IEN_mail: (P(ien) || {}).Mail || '', Directeur: nomP(directeurDe(ecoleId)),
     Encadrants: suivisEtu.map(s => descSuivi(s, s.Encadrant)).join('\n'), Etudiants: suivisEnc.map(s => descSuivi(s, s.Etudiant)).join('\n'),
+    Encadrants_mails: [...new Set(suivisEtu.map(s => mailDe(s.Encadrant)).filter(Boolean))].join(', '),
+    Etudiants_mails: [...new Set(suivisEnc.map(s => mailDe(s.Etudiant)).filter(Boolean))].join(', '),
     Fenetre: [...new Set([...suivisEtu, ...suivisEnc].map(fenetreDe).filter(Boolean))].join(', '),
     Tuteur: nomP((suivisEtu.find(s => s.Type === 'Tutorat alternant') || {}).Encadrant),
     Jours: [...new Set([...suivisEtu, ...suivisEnc].filter(s => s.Type === 'Tutorat alternant').flatMap(s => liste(s.Jours)))].join(', '),
